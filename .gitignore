@@ -1,0 +1,8 @@
+# Cargo
+target
+
+# Eclipse
+.project
+
+# Vagrant
+.vagrant

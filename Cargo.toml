@@ -1,0 +1,4 @@
+[package]
+name = "rs-sync"
+version = "0.1.0"
+authors = ["Remi Rampin <remirampin@gmail.com>"]
