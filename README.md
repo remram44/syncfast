@@ -13,4 +13,7 @@ I am currently working on the internals and on the rdiff clone, online synchroni
 Notes
 =====
 
+The rsync algorithm: https://rsync.samba.org/tech_report/
+How rsync works: https://rsync.samba.org/how-rsync-works.html
+
 Compression crate: https://crates.io/crates/flate2
