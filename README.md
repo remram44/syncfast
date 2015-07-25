@@ -9,3 +9,8 @@ Current status
 This is very early work, which I am doing mainly to learn Rust.
 
 I am currently working on the internals and on the rdiff clone, online synchronization over SSH to be done afterwards.
+
+Notes
+=====
+
+Compression crate: https://crates.io/crates/flate2
