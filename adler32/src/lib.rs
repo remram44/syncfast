@@ -1,3 +1,4 @@
+#[cfg(test)]
 extern crate rand;
 
 use std::io;
