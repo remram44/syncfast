@@ -10,36 +10,36 @@ const BASE: u32 = 65521;
 const NMAX: usize = 5552;
 
 #[inline(always)]
-fn DO1(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
+fn do1(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
     *adler += buf[0] as u32;
     *sum2 += *adler;
 }
 
 #[inline(always)]
-fn DO2(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
-    DO1(adler, sum2, &buf[0..1]);
-    DO1(adler, sum2, &buf[1..2]);
+fn do2(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
+    do1(adler, sum2, &buf[0..1]);
+    do1(adler, sum2, &buf[1..2]);
 }
 
 #[inline(always)]
-fn DO4(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
-    DO2(adler, sum2, &buf[0..2]);
-    DO2(adler, sum2, &buf[2..4]);
+fn do4(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
+    do2(adler, sum2, &buf[0..2]);
+    do2(adler, sum2, &buf[2..4]);
 }
 
 #[inline(always)]
-fn DO8(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
-    DO4(adler, sum2, &buf[0..4]);
-    DO4(adler, sum2, &buf[4..8]);
+fn do8(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
+    do4(adler, sum2, &buf[0..4]);
+    do4(adler, sum2, &buf[4..8]);
 }
 
 #[inline(always)]
-fn DO16(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
-    DO8(adler, sum2, &buf[0..8]);
-    DO8(adler, sum2, &buf[8..16]);
+fn do16(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
+    do8(adler, sum2, &buf[0..8]);
+    do8(adler, sum2, &buf[8..16]);
 }
 
-fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
+pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
     // initial Adler-32 value
     let mut adler: u32 = 1;
     let mut sum2: u32 = 0;
@@ -52,7 +52,7 @@ fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
         let mut pos = 0;
         while pos < NMAX {
             // 16 sums unrolled
-            DO16(&mut adler, &mut sum2, &buf[pos..pos + 16]);
+            do16(&mut adler, &mut sum2, &buf[pos..pos + 16]);
             pos += 16;
         }
         adler %= BASE;
@@ -64,7 +64,7 @@ fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
     if len > 0 { // avoid modulos if none remaining
         let mut pos = 0;
         while len - pos >= 16 {
-            DO16(&mut adler, &mut sum2, &buf[pos..pos + 16]);
+            do16(&mut adler, &mut sum2, &buf[pos..pos + 16]);
             pos += 16;
         }
         while len - pos > 0 {
