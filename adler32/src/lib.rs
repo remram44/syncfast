@@ -79,30 +79,31 @@ fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
     Ok(adler | (sum2 << 16))
 }
 
-fn adler32_slow<R: io::Read>(reader: R) -> io::Result<u32> {
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-
-    for byte in reader.bytes() {
-        let byte = try!(byte) as u32;
-        a = a.wrapping_add(byte) % BASE;
-        b = b.wrapping_add(a) % BASE;
-    }
-
-    Ok((b << 16) | a)
-}
-
 #[cfg(test)]
 mod test {
+    use rand;
     use rand::Rng;
-    use std::io::Cursor;
+    use std::io;
 
-    use super::adler32;
+    use super::{BASE, adler32};
+
+    fn adler32_slow<R: io::Read>(reader: R) -> io::Result<u32> {
+        let mut a: u32 = 1;
+        let mut b: u32 = 0;
+
+        for byte in reader.bytes() {
+            let byte = try!(byte) as u32;
+            a = a.wrapping_add(byte) % BASE;
+            b = b.wrapping_add(a) % BASE;
+        }
+
+        Ok((b << 16) | a)
+    }
 
     #[test]
     fn testvectors() {
         fn do_test(v: u32, bytes: &[u8]) {
-            let r = Cursor::new(bytes);
+            let r = io::Cursor::new(bytes);
             assert_eq!(adler32(r).unwrap(), v);
         }
         do_test(0x00000001, b"");
@@ -115,5 +116,20 @@ mod test {
                               0123456789");
         do_test(0x97b61069, b"1234567890123456789012345678901234567890\
                               1234567890123456789012345678901234567890");
+    }
+
+    #[test]
+    fn compare() {
+        let mut rng = rand::thread_rng();
+        let mut data = vec![0u8; 5589];
+        for size in [0, 1, 3, 4, 5, 31, 32, 33, 67,
+                     5550, 5552, 5553, 5568, 5584, 5589].iter().cloned() {
+            rng.fill_bytes(&mut data[..size]);
+            let r1 = io::Cursor::new(&data[..size]);
+            let r2 = r1.clone();
+            if adler32_slow(r1).unwrap() != adler32(r2).unwrap() {
+                panic!("Comparison failed, size={}", size);
+            }
+        }
     }
 }
