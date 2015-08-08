@@ -1,4 +1,11 @@
 [root]
 name = "rs-sync"
 version = "0.1.0"
+dependencies = [
+ "adler32 0.1.0",
+]
+
+[[package]]
+name = "adler32"
+version = "0.1.0"
 
