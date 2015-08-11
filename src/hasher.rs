@@ -52,6 +52,10 @@ impl<F, H, HF: Fn(&[u8]) -> H> Hashes<F, H, HF> where F: Clone, H: Eq + Hash {
     pub fn find(&self, hash: &H) -> Option<&BlockLocation<F>> {
         self.blocks.get(hash)
     }
+
+    pub fn blocks(&self) -> &HashMap<H, BlockLocation<F>> {
+        &self.blocks
+    }
 }
 
 /// Default hashes, used in rs-sync: Adler32 and SHA-1
