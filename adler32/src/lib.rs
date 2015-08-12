@@ -1,6 +1,7 @@
 #[cfg(test)]
 extern crate rand;
 
+use std::borrow::Cow;
 use std::io;
 
 // adler32 algorithm and implementation taken from zlib; http://www.zlib.net/
@@ -108,6 +109,63 @@ pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
 
     // return recombined sums
     Ok(adler | (sum2 << 16))
+}
+
+pub struct RollingAdler32 {
+    a: u32,
+    b: u32,
+
+    size: usize,
+    pos: usize,
+    buffer: Vec<u8>,
+}
+
+impl RollingAdler32 {
+    pub fn new(size: usize) -> RollingAdler32 {
+        Self::from_value(size, 1)
+    }
+
+    pub fn from_value(size: usize, adler32: u32) -> RollingAdler32 {
+        let a = adler32 & 0xFF;
+        let b = adler32 >> 16;
+        RollingAdler32 { a: a, b: b, size: size, pos: 0,
+                         buffer: Vec::with_capacity(size) }
+    }
+
+    pub fn append(&mut self, byte: u8) {
+        let byte_ = byte as u32;
+        // If we haven't filled the buffer yet, no need to remove a byte
+        if self.buffer.len() < self.size {
+            self.a = (self.a + byte_) % BASE;
+            self.b = (self.b + self.a) % BASE;
+            self.buffer.push(byte);
+        } else {
+            let oldbyte = self.buffer[self.pos] as u32;
+            self.a = (self.a + byte_ - oldbyte) % BASE;
+            self.b = (self.b - (self.pos as u32) * oldbyte + self.a) % BASE;
+            self.buffer[self.pos] = byte;
+        }
+        self.pos += 1;
+    }
+
+    pub fn replace(&mut self, new_data: &[u8]) {
+        
+    }
+
+    pub fn hash(&self) -> u32 {
+        (self.b << 16) | self.a
+    }
+
+    pub fn buffer(&self) -> Cow<Vec<u8>> {
+        if self.buffer.len() < 4064 {
+            Cow::Borrowed(&self.buffer)
+        } else {
+            let mut vec = Vec::with_capacity(self.size);
+            vec.extend(self.buffer[self.pos..].iter());
+            vec.extend(self.buffer[..self.pos].iter());
+            Cow::Owned(vec)
+        }
+    }
 }
 
 #[cfg(test)]

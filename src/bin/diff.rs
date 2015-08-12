@@ -1,9 +1,11 @@
+extern crate adler32;
 extern crate byteorder;
+extern crate docopt;
 extern crate env_logger;
 #[macro_use] extern crate log;
 extern crate rs_sync;
 extern crate rustc_serialize;
-extern crate docopt;
+extern crate sha1;
 
 use std::collections::{HashMap, HashSet};
 use std::default::Default;
@@ -12,9 +14,11 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path};
 use std::process;
 
+use adler32::RollingAdler32;
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use docopt::Docopt;
 use rs_sync::DefaultHashes;
+use sha1::Sha1;
 
 static USAGE: &'static str = "
 rdiff clone.
@@ -183,18 +187,86 @@ fn read_index(index: File) -> io::Result<HashMap<u32, HashSet<[u8; 20]>>> {
     }
 }
 
+fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W, size: usize)
+    -> io::Result<()>
+{
+    unimplemented!();
+}
+
 /// 'delta' command: write the delta file.
 fn do_delta(index_file: String, new_file: String, delta_file: String)
     -> io::Result<()>
 {
     let delta = try!(File::create(delta_file));
-    let index = try!(File::open(index_file));
-    let hashes = read_index(index);
+    let hashes = {
+        let index = try!(File::open(index_file));
+        try!(read_index(index))
+    };
+
+    let mut file = io::BufReader::new(try!(File::open(new_file)));
 
     let mut delta = io::BufWriter::new(delta);
     try!(delta.write_all(b"RS-SYNCD"));
     try!(delta.write_u16::<BigEndian>(0x0001)); // 0.1
-    
+
+    let mut pos: u64 = 0;
+    let mut block_start: u64 = 0;
+
+    // Read the file one byte at a time, updating the Adler32 hash
+    let mut adler32 = RollingAdler32::new(4096);
+    loop {
+        let mut buf = [0u8];
+        match file.read(&mut buf) {
+            Err(e) => {
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                } else {
+                    return Err(e);
+                }
+            }
+            Ok(0) => break,
+            Ok(_) => {}
+        }
+        pos += 1;
+        adler32.append(buf[0]);
+
+        // If we have a match
+        if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
+            // Compute the SHA-1
+            let sha1 = {
+                let mut hasher = Sha1::new();
+                hasher.update(&adler32.buffer());
+                let mut digest: [u8; 20] = unsafe {
+                    ::std::mem::uninitialized()
+                };
+                hasher.output(&mut digest);
+                digest
+            };
+
+            if sha1_hashes.contains(&sha1) {
+                // Write previous block
+                if pos - 4096 > block_start {
+                    let len = pos - 4096 - block_start;
+                    try!(delta.write_u8(0x01)); // LITERAL
+                    try!(delta.write_u16::<BigEndian>(len as u16));
+                    try!(file.seek(io::SeekFrom::Start(block_start)));
+                    try!(copy(file, delta, len));
+                    try!(file.seek(io::SeekFrom::Start(pos)));
+                }
+
+                // Write current block
+                try!(delta.write_u8(0x02)); // KNOWN_BLOCK
+                try!(delta.write_u32::<BigEndian>(adler32.hash()));
+                try!(delta.write_all(&sha1));
+
+                block_start = pos;
+
+                // Advance by 4096 bytes
+                adler32 = RollingAdler32::new();
+            }
+        }
+    }
+
     unimplemented!();
 }
 
