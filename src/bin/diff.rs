@@ -7,10 +7,11 @@ extern crate rs_sync;
 extern crate rustc_serialize;
 extern crate sha1;
 
+use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use std::default::Default;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Component, Path};
 use std::process;
 
@@ -18,6 +19,7 @@ use adler32::RollingAdler32;
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use docopt::Docopt;
 use rs_sync::DefaultHashes;
+use rs_sync::utils::ReadRetry;
 use sha1::Sha1;
 
 static USAGE: &'static str = "
@@ -84,7 +86,7 @@ fn main() {
     match result {
         Ok(()) => {},
         Err(e) => {
-            write!(io::stderr(), "Fatal error: {}", e);
+            write!(io::stderr(), "Fatal error: {}", e).is_ok(); // Ignore error
             process::exit(1);
         }
     }
@@ -187,10 +189,20 @@ fn read_index(index: File) -> io::Result<HashMap<u32, HashSet<[u8; 20]>>> {
     }
 }
 
-fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W, size: usize)
+fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W, mut size: usize)
     -> io::Result<()>
 {
-    unimplemented!();
+    let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
+    while size > 0 {
+        let len = min(4096, size);
+        if try!(reader.read(&mut buffer[..len])) != len {
+            return Err(io::Error::new(io::ErrorKind::Other,
+                                      "Unexpected end of file"));
+        }
+        try!(writer.write_all(&buffer[..len]));
+        size -= len;
+    }
+    Ok(())
 }
 
 /// 'delta' command: write the delta file.
@@ -204,70 +216,68 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     };
 
     let mut file = io::BufReader::new(try!(File::open(new_file)));
+    let mut pos: u64 = 0;
 
     let mut delta = io::BufWriter::new(delta);
     try!(delta.write_all(b"RS-SYNCD"));
     try!(delta.write_u16::<BigEndian>(0x0001)); // 0.1
 
-    let mut pos: u64 = 0;
-    let mut block_start: u64 = 0;
-
-    // Read the file one byte at a time, updating the Adler32 hash
-    let mut adler32 = RollingAdler32::new(4096);
+    // Reads the file by blocks
     loop {
-        let mut buf = [0u8];
-        match file.read(&mut buf) {
-            Err(e) => {
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                } else {
-                    return Err(e);
-                }
-            }
-            Ok(0) => break,
-            Ok(_) => {}
-        }
-        pos += 1;
-        adler32.append(buf[0]);
+        let block_start = pos;
 
-        // If we have a match
-        if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
-            // Compute the SHA-1
-            let sha1 = {
-                let mut hasher = Sha1::new();
-                hasher.update(&adler32.buffer());
-                let mut digest: [u8; 20] = unsafe {
-                    ::std::mem::uninitialized()
+        // Reads max 4096 bytes
+        let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
+        let read = try!(file.read_retry(&mut buffer));
+        pos += read as u64;
+
+        // Hash it
+        let mut adler32 = RollingAdler32::from_buffer(&buffer[..read]);
+
+        // Now we advance while updating the Adler32 hash, until we find a
+        // known block or we read 2**16 bytes
+        loop {
+            if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
+                let sha1 = {
+                    let mut hasher = Sha1::new();
+                    hasher.update(&buffer[((pos % 4096) as usize)..]);
+                    let mut digest: [u8; 20] = unsafe {
+                        ::std::mem::uninitialized()
+                    };
+                    hasher.output(&mut digest);
+                    digest
                 };
-                hasher.output(&mut digest);
-                digest
-            };
 
-            if sha1_hashes.contains(&sha1) {
-                // Write previous block
-                if pos - 4096 > block_start {
-                    let len = pos - 4096 - block_start;
-                    try!(delta.write_u8(0x01)); // LITERAL
-                    try!(delta.write_u16::<BigEndian>(len as u16));
-                    try!(file.seek(io::SeekFrom::Start(block_start)));
-                    try!(copy(file, delta, len));
-                    try!(file.seek(io::SeekFrom::Start(pos)));
+                if sha1_hashes.contains(&sha1) {
+                    // Write the unmatched part up to the known block
+                    if (pos - block_start) as usize > read {
+                        let len = (pos - block_start) as usize - read;
+                        try!(delta.write_u8(0x01)); // LITERAL
+                        try!(delta.write_u16::<BigEndian>((len - 1) as u16));
+                        try!(file.seek(io::SeekFrom::Start(block_start)));
+                        try!(copy(&mut file, &mut delta, len));
+                        try!(file.seek(io::SeekFrom::Start(pos)));
+                    }
+
+                    // Write the reference to the known block
+                    try!(delta.write_u8(0x02)); // KNOWN_BLOCK
+                    try!(delta.write_u32::<BigEndian>(adler32.hash()));
+                    try!(delta.write_all(&sha1));
+                    break;
                 }
-
-                // Write current block
-                try!(delta.write_u8(0x02)); // KNOWN_BLOCK
-                try!(delta.write_u32::<BigEndian>(adler32.hash()));
-                try!(delta.write_all(&sha1));
-
-                block_start = pos;
-
-                // Advance by 4096 bytes
-                adler32 = RollingAdler32::new();
             }
+
+            {
+                let idx = (pos % 4096) as usize;
+                adler32.remove(4096, buffer[idx]);
+                if try!(file.read(&mut buffer[idx..idx + 1])) == 0 {
+                    break;
+                }
+                adler32.update(buffer[idx]);
+            }
+            pos += 1;
         }
     }
-
-    unimplemented!();
 }
 
 /// 'patch' command: update the old file to get the new file.

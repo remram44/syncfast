@@ -3,5 +3,6 @@ extern crate adler32;
 extern crate sha1;
 
 mod hasher;
+pub mod utils;
 
 pub use hasher::{DefaultHashes, Hashes};
