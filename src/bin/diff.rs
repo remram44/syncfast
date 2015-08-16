@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::default::Default;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
-use std::path::{Component, Path};
+use std::path::Path;
 use std::process;
 
 use adler32::RollingAdler32;
@@ -154,8 +154,9 @@ fn read_index<R: Read>(index: R)
     let version = try!(index.read_u16::<BigEndian>());
     if version != 0x0001 { // 0.1
         return Err(io::Error::new(io::ErrorKind::InvalidData,
-                   format!("Index file in unknown version {}.{}",
-                           version >> 8, version & 0xFF)));
+                                  format!("Index file in unknown version \
+                                           {}.{}",
+                                          version >> 8, version & 0xFF)));
     }
     let mut nb_hashes = 0;
     info!("Index file is version {}.{}", version >> 8, version & 0xFF);
@@ -316,19 +317,24 @@ fn do_patch(references: Vec<String>,
 
     // Read the delta file
     let mut delta = io::BufReader::new(try!(File::open(delta_file)));
+    let mut buffer: [u8; 8] = unsafe { ::std::mem::uninitialized() };
+    if try!(read(&mut delta, &mut buffer, 8)) != b"RS-SYNCD" {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  "Invalid delta file"));
+    }
+    let version = try!(delta.read_u16::<BigEndian>());
+    if version != 0x0001 { // 0.1
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  format!("Delta file is in unknown version \
+                                           {}.{}",
+                                          version >> 8, version & 0xFF)));
+    }
 
     loop {
         match delta.read_u8() {
             Ok(0x01) => { // LITERAL
                 info!("Literal block");
-                let len = match delta.read_u16::<BigEndian>() {
-                    Err(byteorder::Error::UnexpectedEOF) => {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                                  "Unexpected end of file"));
-                    }
-                    Err(byteorder::Error::Io(e)) => return Err(e),
-                    Ok(b) => b as usize + 1,
-                };
+                let len = try!(delta.read_u16::<BigEndian>()) as usize;
                 info!("Size: {}", len);
                 try!(copy(&mut delta, &mut file, CopyMode::Exact(len)));
             }
