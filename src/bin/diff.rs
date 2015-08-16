@@ -7,7 +7,6 @@ extern crate rs_sync;
 extern crate rustc_serialize;
 extern crate sha1;
 
-use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use std::default::Default;
 use std::fs::File;
@@ -18,8 +17,8 @@ use std::process;
 use adler32::RollingAdler32;
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use docopt::Docopt;
-use rs_sync::DefaultHashes;
-use rs_sync::utils::ReadRetry;
+use rs_sync::{Adler32_SHA1, DefaultHashes};
+use rs_sync::utils::{copy, CopyMode, ReadRetry};
 use sha1::Sha1;
 
 static USAGE: &'static str = "
@@ -99,10 +98,20 @@ fn do_index(references: Vec<String>,
 {
     let index = try!(File::create(index_file));
 
-    // Hash all that good stuff
+    // Hash all the reference files
+    let hashes = try!(hash_files([old_file].iter().chain(references.iter())));
+
+    // Write out the hashes
+    info!("Writing index file: {} hashes", hashes.blocks().len());
+    write_index(index, hashes)
+}
+
+fn hash_files<'a, I: Iterator<Item=&'a String>>(filenames: I)
+    -> io::Result<DefaultHashes>
+{
     let mut hashes: DefaultHashes = Default::default();
-    for filename in [old_file].iter().chain(references.iter()) {
-        let path = Path::new(filename).to_owned();
+    for filename in filenames {
+        let path = Path::new(&filename).to_owned();
         if !path.is_relative() {
             error!("One path is not relative");
             process::exit(1);
@@ -117,10 +126,7 @@ fn do_index(references: Vec<String>,
         let f = try!(File::open(&path));
         try!(hashes.hash(path, f));
     }
-
-    // Write out the hashes
-    info!("Writing index file: {} hashes", hashes.blocks().len());
-    write_index(index, hashes)
+    Ok(hashes)
 }
 
 fn write_index(index: File, hashes: DefaultHashes) -> io::Result<()> {
@@ -189,22 +195,6 @@ fn read_index(index: File) -> io::Result<HashMap<u32, HashSet<[u8; 20]>>> {
     }
 }
 
-fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W, mut size: usize)
-    -> io::Result<()>
-{
-    let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
-    while size > 0 {
-        let len = min(4096, size);
-        if try!(reader.read(&mut buffer[..len])) != len {
-            return Err(io::Error::new(io::ErrorKind::Other,
-                                      "Unexpected end of file"));
-        }
-        try!(writer.write_all(&buffer[..len]));
-        size -= len;
-    }
-    Ok(())
-}
-
 /// 'delta' command: write the delta file.
 fn do_delta(index_file: String, new_file: String, delta_file: String)
     -> io::Result<()>
@@ -255,7 +245,8 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                         try!(delta.write_u8(0x01)); // LITERAL
                         try!(delta.write_u16::<BigEndian>((len - 1) as u16));
                         try!(file.seek(io::SeekFrom::Start(block_start)));
-                        try!(copy(&mut file, &mut delta, len));
+                        try!(copy(&mut file, &mut delta,
+                                  CopyMode::Exact(len)));
                         try!(file.seek(io::SeekFrom::Start(pos)));
                     }
 
@@ -272,7 +263,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 try!(delta.write_u8(0x01)); // LITERAL
                 try!(delta.write_u16::<BigEndian>(0xFFFF));
                 try!(file.seek(io::SeekFrom::Start(block_start)));
-                try!(copy(&mut file, &mut delta, len));
+                try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
                 try!(file.seek(io::SeekFrom::Start(pos)));
                 break;
             }
@@ -295,5 +286,73 @@ fn do_patch(references: Vec<String>,
             old_file: String, delta_file: String, new_file: String)
     -> io::Result<()>
 {
-    unimplemented!();
+    // Hash al the reference files
+    let hashes = try!(hash_files([old_file].iter().chain(references.iter())));
+
+    // Open the new file
+    let mut file = try!(File::create(new_file));
+
+    // Read the delta file
+    let mut delta = io::BufReader::new(try!(File::open(delta_file)));
+
+    loop {
+        match delta.read_u8() {
+            Ok(0x01) => { // LITERAL
+                let len = match delta.read_u16::<BigEndian>() {
+                    Err(byteorder::Error::UnexpectedEOF) => {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                                  "Unexpected end of file"));
+                    }
+                    Err(byteorder::Error::Io(e)) => return Err(e),
+                    Ok(b) => b as usize + 1,
+                };
+                try!(copy(&mut delta, &mut file, CopyMode::Exact(len)));
+            }
+            Ok(0x02) => { // KNOWN_BLOCK
+                let adler32 = match delta.read_u32::<BigEndian>() {
+                    Err(byteorder::Error::UnexpectedEOF) => {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                                  "Unexpected end of file"));
+                    }
+                    Err(byteorder::Error::Io(e)) => return Err(e),
+                    Ok(n) => n,
+                };
+                let sha1 = {
+                    let mut buf: [u8; 20] = unsafe {
+                        ::std::mem::uninitialized()
+                    };
+                    if try!(delta.read_retry(&mut buf)) != 20 {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                                  "Unexpected end of file"));
+                    }
+                    buf
+                };
+                match hashes.find(&Adler32_SHA1 { adler32: adler32,
+                                                  sha1: sha1 }) {
+                    None => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Delta file references unknown block hash; did you
+                             forget --reference arguments? Did any of the
+                             source files change?"));
+                    }
+                    Some(loc) => {
+                        let mut origin = try!(File::open(&loc.file));
+                        try!(origin.seek(io::SeekFrom::Start(loc.offset)));
+                        try!(copy(&mut origin, &mut file,
+                                  CopyMode::Maximum(4096)));
+                    }
+                }
+            }
+            Ok(c) => {
+                error!("Invalid command {:02X}", c);
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                          "Invalid delta command"));
+            }
+            Err(byteorder::Error::UnexpectedEOF) => break,
+            Err(byteorder::Error::Io(e)) => return Err(e),
+        }
+    }
+
+    Ok(())
 }
