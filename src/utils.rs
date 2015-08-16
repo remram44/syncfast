@@ -81,7 +81,5 @@ pub fn to_hex(sha1: &[u8]) -> String {
     for sha1byte in sha1.iter() {
         write!(hexdigest, "{:02X}", sha1byte).unwrap();
     }
-    info!("Read SHA-1: {}",
-          unsafe { ::std::str::from_utf8_unchecked(&hexdigest) });
     unsafe { String::from_utf8_unchecked(hexdigest) }
 }

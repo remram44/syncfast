@@ -27,7 +27,7 @@ rdiff clone.
 
 Usage:
   rs-diff index [--reference=<ref_file>]... <old-file> <index-file>
-  rs-diff delta <index_file> <new-file> <delta-file>
+  rs-diff delta <index-file> <new-file> <delta-file>
   rs-diff patch [--reference=<ref>] <old-file> <delta-file> <new-file>
   rs-diff (-h | --help)
   rs-diff --version 
@@ -86,7 +86,7 @@ fn main() {
     match result {
         Ok(()) => {},
         Err(e) => {
-            write!(io::stderr(), "Fatal error: {}", e).is_ok(); // Ignore error
+            write!(io::stderr(), "Fatal error: {}\n", e).is_ok(); // Ignore error
             process::exit(1);
         }
     }
@@ -162,14 +162,14 @@ fn read_index<R: Read>(index: R)
     info!("Index file is version {}.{}", version >> 8, version & 0xFF);
     loop {
         let adler32 = {
-            let mut buf: [u8; 2] = unsafe { ::std::mem::uninitialized() };
+            let mut buf: [u8; 4] = unsafe { ::std::mem::uninitialized() };
             let len = try!(index.read_retry(&mut buf));
             if len == 0 {
                 info!("Read {} hashes", nb_hashes);
                 return Ok(hashes);
-            } else if len == 2 {
+            } else if len == 4 {
                 let mut cursor: io::Cursor<&[u8]> = io::Cursor::new(&buf);
-                try!(cursor.read_u32::<BigEndian>())
+                cursor.read_u32::<BigEndian>().unwrap()
             } else {
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
                                           "Unexpected end of file"));
@@ -207,7 +207,7 @@ fn read_index<R: Read>(index: R)
 fn do_delta(index_file: String, new_file: String, delta_file: String)
     -> io::Result<()>
 {
-    let delta = try!(File::create(delta_file));
+    let delta = try!(File::create(&delta_file));
     let hashes = {
         let index = try!(File::open(&index_file));
         info!("Reading index file {}...", index_file);
