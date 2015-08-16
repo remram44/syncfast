@@ -1,4 +1,5 @@
-use std::io::{self, Read};
+use std::cmp::min;
+use std::io::{self, Read, Write};
 
 pub trait ReadRetry: Read {
     /// Wrapper for `Read::read()` that retries when interrupted
@@ -34,4 +35,43 @@ impl<R: Read> ReadRetry for R {
         }
         Ok(read)
     }
+}
+
+#[derive(Clone, Copy)]
+pub enum CopyMode {
+    Exact(usize),
+    Maximum(usize),
+    All,
+}
+
+pub fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W,
+                               mut what: CopyMode)
+    -> io::Result<()>
+{
+    let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
+    while match what {
+        CopyMode::All => true,
+        CopyMode::Exact(l) | CopyMode::Maximum(l) => l > 0,
+    } {
+        let len = match what {
+            CopyMode::Exact(len) | CopyMode::Maximum(len) => min(4096, len),
+            CopyMode::All => 4096,
+        };
+        if try!(reader.read(&mut buffer[..len])) != len {
+            if let CopyMode::Exact(_) = what {
+                return Err(io::Error::new(io::ErrorKind::Other,
+                                          "Unexpected end of file"));
+            } else {
+                return Ok(());
+            }
+        }
+        try!(writer.write_all(&buffer[..len]));
+        match what {
+            CopyMode::All => {},
+            CopyMode::Exact(ref mut l) | CopyMode::Maximum(ref mut l) => {
+                *l -= len;
+            }
+        }
+    }
+    Ok(())
 }
