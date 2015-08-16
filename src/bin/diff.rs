@@ -265,6 +265,16 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                     try!(delta.write_all(&sha1));
                     break;
                 }
+            } else if (pos - block_start) as usize >= read + 65536 {
+                // Write the whole block, so as to not overflow the u16 block
+                // length field
+                let len = (pos - block_start) as usize - read;
+                try!(delta.write_u8(0x01)); // LITERAL
+                try!(delta.write_u16::<BigEndian>(0xFFFF));
+                try!(file.seek(io::SeekFrom::Start(block_start)));
+                try!(copy(&mut file, &mut delta, len));
+                try!(file.seek(io::SeekFrom::Start(pos)));
+                break;
             }
 
             {
