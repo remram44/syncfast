@@ -17,8 +17,9 @@ use std::process;
 use adler32::RollingAdler32;
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use docopt::Docopt;
+use log::LogLevel;
 use rs_sync::{Adler32_SHA1, DefaultHashes};
-use rs_sync::utils::{copy, CopyMode, ReadRetry};
+use rs_sync::utils::{copy, CopyMode, ReadRetry, to_hex};
 use sha1::Sha1;
 
 static USAGE: &'static str = "
@@ -102,7 +103,6 @@ fn do_index(references: Vec<String>,
     let hashes = try!(hash_files([old_file].iter().chain(references.iter())));
 
     // Write out the hashes
-    info!("Writing index file: {} hashes", hashes.blocks().len());
     write_index(index, hashes)
 }
 
@@ -112,16 +112,6 @@ fn hash_files<'a, I: Iterator<Item=&'a String>>(filenames: I)
     let mut hashes: DefaultHashes = Default::default();
     for filename in filenames {
         let path = Path::new(&filename).to_owned();
-        if !path.is_relative() {
-            error!("One path is not relative");
-            process::exit(1);
-        }
-        for comp in path.components() {
-            if let Component::ParentDir = comp {
-                error!("One path contains \"..\"");
-                process::exit(1);
-            }
-        }
         info!("Indexing {}", path.to_string_lossy());
         let f = try!(File::open(&path));
         try!(hashes.hash(path, f));
@@ -130,6 +120,7 @@ fn hash_files<'a, I: Iterator<Item=&'a String>>(filenames: I)
 }
 
 fn write_index(index: File, hashes: DefaultHashes) -> io::Result<()> {
+    info!("Writing index file: {} hashes", hashes.blocks().len());
     let mut index = io::BufWriter::new(index);
     try!(index.write_all(b"RS-SYNCI"));
     try!(index.write_u16::<BigEndian>(0x0001)); // 0.1
@@ -143,14 +134,16 @@ fn write_index(index: File, hashes: DefaultHashes) -> io::Result<()> {
 fn read<'a, R: Read>(file: &mut R, buffer: &'a mut [u8], size: usize)
     -> io::Result<&'a [u8]>
 {
-    if try!(file.read(&mut buffer[..size])) != size {
+    if try!(file.read_retry(&mut buffer[..size])) != size {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
                                   "Unexpected end of file"));
     }
     Ok(&buffer[..size])
 }
 
-fn read_index(index: File) -> io::Result<HashMap<u32, HashSet<[u8; 20]>>> {
+fn read_index<R: Read>(index: R)
+    -> io::Result<HashMap<u32, HashSet<[u8; 20]>>>
+{
     let mut hashes = HashMap::new();
     let mut index = io::BufReader::new(index);
     let mut buffer: [u8; 8] = unsafe { ::std::mem::uninitialized() };
@@ -164,23 +157,36 @@ fn read_index(index: File) -> io::Result<HashMap<u32, HashSet<[u8; 20]>>> {
                    format!("Index file in unknown version {}.{}",
                            version >> 8, version & 0xFF)));
     }
+    let mut nb_hashes = 0;
+    info!("Index file is version {}.{}", version >> 8, version & 0xFF);
     loop {
         let adler32 = {
             let mut buf: [u8; 2] = unsafe { ::std::mem::uninitialized() };
-            let len = try!(index.read(&mut buf));
+            let len = try!(index.read_retry(&mut buf));
             if len == 0 {
+                info!("Read {} hashes", nb_hashes);
                 return Ok(hashes);
-            } else {
-                assert!(len == 2);
+            } else if len == 2 {
                 let mut cursor: io::Cursor<&[u8]> = io::Cursor::new(&buf);
                 try!(cursor.read_u32::<BigEndian>())
+            } else {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                          "Unexpected end of file"));
             }
         };
+        info!("Read Adler32: {}", adler32);
         let mut sha1: [u8; 20] = unsafe { ::std::mem::uninitialized() };
-        assert!(try!(index.read(&mut sha1)) == 20);
+        if try!(index.read(&mut sha1)) != 20 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                      "Unexpected end of file"));
+        }
+        if log_enabled!(LogLevel::Info) {
+            info!("Read SHA-1: {}", to_hex(&sha1));
+        }
 
         if match hashes.get_mut(&adler32) {
             Some(set) => {
+                info!("(Adler32 hashes collide)");
                 set.insert(sha1);
                 false
             }
@@ -192,6 +198,7 @@ fn read_index(index: File) -> io::Result<HashMap<u32, HashSet<[u8; 20]>>> {
             set.insert(sha1);
             assert!(hashes.insert(adler32, set).is_none());
         }
+        nb_hashes += 1;
     }
 }
 
@@ -201,7 +208,8 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
 {
     let delta = try!(File::create(delta_file));
     let hashes = {
-        let index = try!(File::open(index_file));
+        let index = try!(File::open(&index_file));
+        info!("Reading index file {}...", index_file);
         try!(read_index(index))
     };
 
@@ -215,6 +223,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     // Reads the file by blocks
     loop {
         let block_start = pos;
+        info!("Starting scan at position {}", pos);
 
         // Reads max 4096 bytes
         let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
@@ -228,6 +237,8 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
         // known block or we read 2**16 bytes
         loop {
             if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
+                info!("Found Adler32 match at position {}: {}",
+                      pos, adler32.hash());
                 let sha1 = {
                     let mut hasher = Sha1::new();
                     hasher.update(&buffer[((pos % 4096) as usize)..]);
@@ -239,9 +250,12 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 };
 
                 if sha1_hashes.contains(&sha1) {
+                    info!("SHA-1 matches");
+
                     // Write the unmatched part up to the known block
                     if (pos - block_start) as usize > read {
                         let len = (pos - block_start) as usize - read;
+                        info!("Writing unmatched block, size {}", len);
                         try!(delta.write_u8(0x01)); // LITERAL
                         try!(delta.write_u16::<BigEndian>((len - 1) as u16));
                         try!(file.seek(io::SeekFrom::Start(block_start)));
@@ -251,15 +265,23 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                     }
 
                     // Write the reference to the known block
+                    if log_enabled!(LogLevel::Info) {
+                        info!("Writing known block, Adler32: {}, SHA-1: {}",
+                              adler32.hash(), to_hex(&sha1));
+                    }
                     try!(delta.write_u8(0x02)); // KNOWN_BLOCK
                     try!(delta.write_u32::<BigEndian>(adler32.hash()));
                     try!(delta.write_all(&sha1));
                     break;
+                } else {
+                    info!("SHA-1 doesn't match");
                 }
             } else if (pos - block_start) as usize >= read + 65536 {
                 // Write the whole block, so as to not overflow the u16 block
                 // length field
                 let len = (pos - block_start) as usize - read;
+                info!("No match at position {}, writing unmatched block, 
+                       size {}", pos, len);
                 try!(delta.write_u8(0x01)); // LITERAL
                 try!(delta.write_u16::<BigEndian>(0xFFFF));
                 try!(file.seek(io::SeekFrom::Start(block_start)));
@@ -286,7 +308,7 @@ fn do_patch(references: Vec<String>,
             old_file: String, delta_file: String, new_file: String)
     -> io::Result<()>
 {
-    // Hash al the reference files
+    // Hash all the reference files
     let hashes = try!(hash_files([old_file].iter().chain(references.iter())));
 
     // Open the new file
@@ -298,6 +320,7 @@ fn do_patch(references: Vec<String>,
     loop {
         match delta.read_u8() {
             Ok(0x01) => { // LITERAL
+                info!("Literal block");
                 let len = match delta.read_u16::<BigEndian>() {
                     Err(byteorder::Error::UnexpectedEOF) => {
                         return Err(io::Error::new(io::ErrorKind::InvalidData,
@@ -306,9 +329,11 @@ fn do_patch(references: Vec<String>,
                     Err(byteorder::Error::Io(e)) => return Err(e),
                     Ok(b) => b as usize + 1,
                 };
+                info!("Size: {}", len);
                 try!(copy(&mut delta, &mut file, CopyMode::Exact(len)));
             }
             Ok(0x02) => { // KNOWN_BLOCK
+                info!("Known block");
                 let adler32 = match delta.read_u32::<BigEndian>() {
                     Err(byteorder::Error::UnexpectedEOF) => {
                         return Err(io::Error::new(io::ErrorKind::InvalidData,
@@ -327,6 +352,7 @@ fn do_patch(references: Vec<String>,
                     }
                     buf
                 };
+                info!("Adler32: {}, SHA-1: {}", adler32, to_hex(&sha1));
                 match hashes.find(&Adler32_SHA1 { adler32: adler32,
                                                   sha1: sha1 }) {
                     None => {

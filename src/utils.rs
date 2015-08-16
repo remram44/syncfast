@@ -75,3 +75,13 @@ pub fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W,
     }
     Ok(())
 }
+
+pub fn to_hex(sha1: &[u8]) -> String {
+    let mut hexdigest = Vec::with_capacity(40);
+    for sha1byte in sha1.iter() {
+        write!(hexdigest, "{:02X}", sha1byte).unwrap();
+    }
+    info!("Read SHA-1: {}",
+          unsafe { ::std::str::from_utf8_unchecked(&hexdigest) });
+    unsafe { String::from_utf8_unchecked(hexdigest) }
+}
