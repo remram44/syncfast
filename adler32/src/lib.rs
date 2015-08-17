@@ -121,7 +121,7 @@ impl RollingAdler32 {
     }
 
     pub fn from_value(adler32: u32) -> RollingAdler32 {
-        let a = adler32 & 0xFF;
+        let a = adler32 & 0xFFFF;
         let b = adler32 >> 16;
         RollingAdler32 { a: a, b: b }
     }
@@ -137,7 +137,7 @@ impl RollingAdler32 {
     pub fn remove(&mut self, size: usize, byte: u8) {
         let byte = byte as u32;
         self.a = (self.a + BASE - byte) % BASE;
-        self.b = (self.b + (BASE - size as u32) * byte + self.a) % BASE;
+        self.b = (self.b + BASE - 1 + (BASE - size as u32) * byte) % BASE;
     }
 
     pub fn update(&mut self, byte: u8) {
@@ -153,7 +153,7 @@ mod test {
     use rand::Rng;
     use std::io;
 
-    use super::{BASE, adler32};
+    use super::{BASE, adler32, RollingAdler32};
 
     fn adler32_slow<R: io::Read>(reader: R) -> io::Result<u32> {
         let mut a: u32 = 1;
@@ -161,8 +161,8 @@ mod test {
 
         for byte in reader.bytes() {
             let byte = try!(byte) as u32;
-            a = a.wrapping_add(byte) % BASE;
-            b = b.wrapping_add(a) % BASE;
+            a = (a + byte) % BASE;
+            b = (b + a) % BASE;
         }
 
         Ok((b << 16) | a)
@@ -199,5 +199,26 @@ mod test {
                 panic!("Comparison failed, size={}", size);
             }
         }
+    }
+
+    #[test]
+    fn rolling() {
+        assert_eq!(RollingAdler32::from_value(0x01020304).hash(), 0x01020304);
+
+        fn do_test(a: &[u8], b: &[u8]) {
+            let mut total = Vec::with_capacity(a.len() + b.len());
+            total.extend(a);
+            total.extend(b);
+            let mut h = RollingAdler32::from_buffer(&total[..(b.len())]);
+            for i in 0..(a.len()) {
+                h.remove(b.len(), a[i]);
+                h.update(total[b.len() + i]);
+            }
+            assert_eq!(h.hash(), adler32(b).unwrap());
+        }
+        do_test(b"a", b"b");
+        do_test(b"", b"this a test");
+        do_test(b"th", b"is a test");
+        do_test(b"this a ", b"test");
     }
 }
