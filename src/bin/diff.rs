@@ -229,6 +229,9 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
         // Reads max 4096 bytes
         let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
         let read = try!(file.read_retry(&mut buffer));
+        if read == 0 {
+            return Ok(());
+        }
         pos += read as u64;
 
         // Hash it
@@ -280,7 +283,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
             } else if (pos - block_start) as usize >= read + 65536 {
                 // Write the whole block, so as to not overflow the u16 block
                 // length field
-                let len = (pos - block_start) as usize - read;
+                let len = (pos - block_start) as usize;
                 info!("No match at position {}, writing unmatched block, 
                        size {}", pos, len);
                 try!(delta.write_u8(0x01)); // LITERAL
@@ -295,6 +298,15 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 let idx = (pos % 4096) as usize;
                 adler32.remove(4096, buffer[idx]);
                 if try!(file.read(&mut buffer[idx..idx + 1])) == 0 {
+                    // End of file, write last unknown block
+                    let len = (pos - block_start) as usize - read;
+                    info!("Writing last block from position {}, size {}",
+                          block_start, len);
+                    try!(delta.write_u8(0x01)); // LITERAL
+                    try!(delta.write_u16::<BigEndian>(0xFFFF));
+                    try!(file.seek(io::SeekFrom::Start(block_start)));
+                    try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
+                    try!(file.seek(io::SeekFrom::Start(pos)));
                     break;
                 }
                 adler32.update(buffer[idx]);

@@ -137,7 +137,7 @@ impl RollingAdler32 {
     pub fn remove(&mut self, size: usize, byte: u8) {
         let byte = byte as u32;
         self.a = (self.a + BASE - byte) % BASE;
-        self.b = (self.b + BASE - (size as u32) * byte + self.a) % BASE;
+        self.b = (self.b + (BASE - size as u32) * byte + self.a) % BASE;
     }
 
     pub fn update(&mut self, byte: u8) {
