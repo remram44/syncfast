@@ -4,6 +4,7 @@ use std::hash::Hash;
 use std::io;
 
 use adler32::adler32;
+use super::utils::{ReadRetry, to_hex};
 use sha1::Sha1;
 
 pub struct BlockLocation<F> {
@@ -27,24 +28,15 @@ impl<F, H, HF: Fn(&[u8]) -> H> Hashes<F, H, HF> where F: Clone, H: Eq + Hash {
         let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
         let mut offset = 0;
         loop {
-            let r = reader.read(&mut buffer);
-            match r {
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
-                }
-                Ok(0) => break,
-                Ok(n) => {
-                    let hash = (self.hasher)(&buffer);
-                    let loc = BlockLocation { file: file.clone(),
-                                              offset: offset };
-                    self.blocks.insert(hash, loc);
-                    offset += n as u64;
-                }
+            let n = try!(reader.read_retry(&mut buffer));
+            if n == 0 {
+                break;
             }
+            let hash = (self.hasher)(&buffer[..n]);
+            let loc = BlockLocation { file: file.clone(),
+                                      offset: offset };
+            self.blocks.insert(hash, loc);
+            offset += n as u64;
         }
         Ok(())
     }
@@ -75,6 +67,8 @@ pub fn adler32_sha1(block: &[u8]) -> Adler32_SHA1 {
         sha1.output(&mut digest);
         digest
     };
+    info!("Hash: size: {}, Adler32: {}, SHA-1: {}", block.len(),
+          adler32, to_hex(&sha1));
     Adler32_SHA1 { adler32: adler32,
                    sha1: sha1 }
 }

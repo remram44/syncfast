@@ -244,8 +244,16 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 info!("Found Adler32 match at position {}: {}",
                       pos, adler32.hash());
                 let sha1 = {
+                    let buf_pos = ((pos - block_start) as usize
+                                   - read as usize) % 4096;
                     let mut hasher = Sha1::new();
-                    hasher.update(&buffer[((pos % 4096) as usize)..]);
+                    if read == 4096 {
+                        hasher.update(&buffer[buf_pos..]);
+                        hasher.update(&buffer[..buf_pos]);
+                    } else {
+                        assert!(buf_pos == 0);
+                        hasher.update(&buffer[..read]);
+                    }
                     let mut digest: [u8; 20] = unsafe {
                         ::std::mem::uninitialized()
                     };
@@ -278,7 +286,11 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                     try!(delta.write_all(&sha1));
                     break;
                 } else {
-                    info!("SHA-1 doesn't match");
+                    let hashes = sha1_hashes.iter().fold(
+                        String::new(),
+                        |mut s, i| { s.push(' '); s.push_str(&to_hex(i)); s });
+                    info!("SHA-1 doesn't match: found {} !={}",
+                          to_hex(&sha1), hashes);
                 }
             } else if (pos - block_start) as usize >= read + 65536 {
                 // Write the whole block, so as to not overflow the u16 block
