@@ -292,10 +292,10 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                     info!("SHA-1 doesn't match: found {} !={}",
                           to_hex(&sha1), hashes);
                 }
-            } else if (pos - block_start) as usize >= read + 65536 {
+            } else if (pos - block_start) as usize >= 65536 {
                 // Write the whole block, so as to not overflow the u16 block
                 // length field
-                let len = (pos - block_start) as usize;
+                let len = 65536;
                 info!("No match at position {}, writing unmatched block, \
                        size {}", pos, len);
                 try!(delta.write_u8(0x01)); // LITERAL
@@ -312,13 +312,15 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 if try!(file.read(&mut buffer[idx..idx + 1])) == 0 {
                     // End of file, write last unknown block
                     let len = (pos - block_start) as usize;
-                    info!("Writing last block from position {}, size {}",
-                          block_start, len);
-                    try!(delta.write_u8(0x01)); // LITERAL
-                    try!(delta.write_u16::<BigEndian>(0xFFFF));
-                    try!(file.seek(io::SeekFrom::Start(block_start)));
-                    try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
-                    try!(file.seek(io::SeekFrom::Start(pos)));
+                    if len > 0 {
+                        info!("Writing last block from position {}, size {}",
+                              block_start, len);
+                        try!(delta.write_u8(0x01)); // LITERAL
+                        try!(delta.write_u16::<BigEndian>((len - 1) as u16));
+                        try!(file.seek(io::SeekFrom::Start(block_start)));
+                        try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
+                        try!(file.seek(io::SeekFrom::Start(pos)));
+                    }
                     break;
                 }
                 adler32.update(buffer[idx]);
