@@ -45,35 +45,36 @@ pub enum CopyMode {
 }
 
 pub fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W,
-                               mut what: CopyMode)
-    -> io::Result<()>
+                               what: CopyMode)
+    -> io::Result<usize>
 {
     let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
+    let mut copied = 0;
     while match what {
         CopyMode::All => true,
-        CopyMode::Exact(l) | CopyMode::Maximum(l) => l > 0,
+        CopyMode::Exact(len) | CopyMode::Maximum(len) => copied < len,
     } {
         let len = match what {
-            CopyMode::Exact(len) | CopyMode::Maximum(len) => min(4096, len),
+            CopyMode::Exact(len) | CopyMode::Maximum(len) => {
+                min(4096, len - copied)
+            }
             CopyMode::All => 4096,
         };
-        if try!(reader.read(&mut buffer[..len])) != len {
+        let read = try!(reader.read(&mut buffer[..len]));
+        if read > 0 {
+            try!(writer.write_all(&buffer[..read]));
+            copied += read;
+        }
+        if read != len {
             if let CopyMode::Exact(_) = what {
                 return Err(io::Error::new(io::ErrorKind::Other,
                                           "Unexpected end of file"));
             } else {
-                return Ok(());
-            }
-        }
-        try!(writer.write_all(&buffer[..len]));
-        match what {
-            CopyMode::All => {},
-            CopyMode::Exact(ref mut l) | CopyMode::Maximum(ref mut l) => {
-                *l -= len;
+                break;
             }
         }
     }
-    Ok(())
+    Ok(copied)
 }
 
 pub fn to_hex(sha1: &[u8]) -> String {

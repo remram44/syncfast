@@ -311,7 +311,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 adler32.remove(4096, buffer[idx]);
                 if try!(file.read(&mut buffer[idx..idx + 1])) == 0 {
                     // End of file, write last unknown block
-                    let len = (pos - block_start) as usize - read;
+                    let len = (pos - block_start) as usize;
                     info!("Writing last block from position {}, size {}",
                           block_start, len);
                     try!(delta.write_u8(0x01)); // LITERAL
@@ -395,8 +395,9 @@ fn do_patch(references: Vec<String>,
                     Some(loc) => {
                         let mut origin = try!(File::open(&loc.file));
                         try!(origin.seek(io::SeekFrom::Start(loc.offset)));
-                        try!(copy(&mut origin, &mut file,
-                                  CopyMode::Maximum(4096)));
+                        let copied = try!(copy(&mut origin, &mut file,
+                                               CopyMode::Maximum(4096)));
+                        info!("Copied {} bytes", copied);
                     }
                 }
             }
