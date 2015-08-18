@@ -296,7 +296,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 // Write the whole block, so as to not overflow the u16 block
                 // length field
                 let len = (pos - block_start) as usize;
-                info!("No match at position {}, writing unmatched block, 
+                info!("No match at position {}, writing unmatched block, \
                        size {}", pos, len);
                 try!(delta.write_u8(0x01)); // LITERAL
                 try!(delta.write_u16::<BigEndian>(0xFFFF));
@@ -388,8 +388,8 @@ fn do_patch(references: Vec<String>,
                     None => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "Delta file references unknown block hash; did you
-                             forget --reference arguments? Did any of the
+                            "Delta file references unknown block hash; did \
+                             you forget --reference arguments? Did any of the \
                              source files change?"));
                     }
                     Some(loc) => {
