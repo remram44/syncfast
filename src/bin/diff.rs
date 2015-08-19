@@ -360,7 +360,7 @@ fn do_patch(references: Vec<String>,
         match delta.read_u8() {
             Ok(0x01) => { // LITERAL
                 info!("Literal block");
-                let len = try!(delta.read_u16::<BigEndian>()) as usize;
+                let len = try!(delta.read_u16::<BigEndian>()) as usize + 1;
                 info!("Size: {}", len);
                 try!(copy(&mut delta, &mut file, CopyMode::Exact(len)));
             }
