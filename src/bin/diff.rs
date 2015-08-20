@@ -124,6 +124,7 @@ fn write_index(index: File, hashes: DefaultHashes) -> io::Result<()> {
     let mut index = io::BufWriter::new(index);
     try!(index.write_all(b"RS-SYNCI"));
     try!(index.write_u16::<BigEndian>(0x0001)); // 0.1
+    try!(index.write_u32::<BigEndian>(hashes.blocks().len() as u32));
     for h in hashes.blocks().keys() {
         try!(index.write_u32::<BigEndian>(h.adler32));
         try!(index.write_all(&h.sha1));
@@ -144,7 +145,7 @@ fn read<'a, R: Read>(file: &mut R, buffer: &'a mut [u8], size: usize)
 fn read_index<R: Read>(index: R)
     -> io::Result<HashMap<u32, HashSet<[u8; 20]>>>
 {
-    let mut hashes = HashMap::new();
+    let mut hashes: HashMap<u32, HashSet<[u8; 20]>> = HashMap::new();
     let mut index = io::BufReader::new(index);
     let mut buffer: [u8; 8] = unsafe { ::std::mem::uninitialized() };
     if try!(read(&mut index, &mut buffer, 8)) != b"RS-SYNCI" {
@@ -158,23 +159,10 @@ fn read_index<R: Read>(index: R)
                                            {}.{}",
                                           version >> 8, version & 0xFF)));
     }
-    let mut nb_hashes = 0;
+    let nb_hashes = try!(index.read_u32::<BigEndian>());
     info!("Index file is version {}.{}", version >> 8, version & 0xFF);
-    loop {
-        let adler32 = {
-            let mut buf: [u8; 4] = unsafe { ::std::mem::uninitialized() };
-            let len = try!(index.read_retry(&mut buf));
-            if len == 0 {
-                info!("Read {} hashes", nb_hashes);
-                return Ok(hashes);
-            } else if len == 4 {
-                let mut cursor: io::Cursor<&[u8]> = io::Cursor::new(&buf);
-                cursor.read_u32::<BigEndian>().unwrap()
-            } else {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                          "Unexpected end of file"));
-            }
-        };
+    for _ in 0..nb_hashes {
+        let adler32 = try!(index.read_u32::<BigEndian>());
         info!("Read Adler32: {}", adler32);
         let mut sha1: [u8; 20] = unsafe { ::std::mem::uninitialized() };
         if try!(index.read(&mut sha1)) != 20 {
@@ -199,8 +187,12 @@ fn read_index<R: Read>(index: R)
             set.insert(sha1);
             assert!(hashes.insert(adler32, set).is_none());
         }
-        nb_hashes += 1;
     }
+    if try!(index.read(&mut [0u8])) != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  "Trailing data at end of file"));
+    }
+    Ok(hashes)
 }
 
 /// 'delta' command: write the delta file.
