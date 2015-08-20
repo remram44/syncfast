@@ -26,9 +26,9 @@ static USAGE: &'static str = "
 rdiff clone.
 
 Usage:
-  rs-diff index [--reference=<ref_file>]... <old-file> <index-file>
+  rs-diff index [--ref=<ref_file>]... <old-file> <index-file>
   rs-diff delta <index-file> <new-file> <delta-file>
-  rs-diff patch [--reference=<ref>] <old-file> <delta-file> <new-file>
+  rs-diff patch [--ref=<ref>] <old-file> <delta-file> <new-file>
   rs-diff (-h | --help)
   rs-diff --version 
 
@@ -41,7 +41,7 @@ struct Args {
     cmd_index: bool,
     cmd_delta: bool,
     cmd_patch: bool,
-    flag_reference: Vec<String>,
+    flag_ref: Vec<String>,
     arg_old_file: String,
     arg_index_file: String,
     arg_new_file: String,
@@ -73,13 +73,12 @@ fn main() {
                              });
 
     let result = if args.cmd_index {
-        do_index(args.flag_reference,
-                 args.arg_old_file, args.arg_index_file)
+        do_index(args.flag_ref, args.arg_old_file, args.arg_index_file)
     } else if args.cmd_delta {
         do_delta(args.arg_index_file, args.arg_new_file, args.arg_delta_file)
     } else {
         assert!(args.cmd_patch);
-        do_patch(args.flag_reference,
+        do_patch(args.flag_ref,
                  args.arg_old_file, args.arg_delta_file, args.arg_new_file)
     };
 
