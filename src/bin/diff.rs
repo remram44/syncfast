@@ -8,7 +8,6 @@ extern crate rustc_serialize;
 extern crate sha1;
 
 use std::collections::{HashMap, HashSet};
-use std::default::Default;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
 use std::path::Path;
@@ -18,7 +17,7 @@ use adler32::RollingAdler32;
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use docopt::Docopt;
 use log::LogLevel;
-use rs_sync::{Adler32_SHA1, DefaultHashes};
+use rs_sync::{Adler32_SHA1, adler32_sha1, DefaultHashes};
 use rs_sync::utils::{copy, CopyMode, ReadRetry, to_hex};
 use sha1::Sha1;
 
@@ -26,14 +25,15 @@ static USAGE: &'static str = "
 rdiff clone.
 
 Usage:
-  rs-diff index [--ref=<ref_file>]... <old-file> <index-file>
+  rs-diff index [--blocksize=<b>] [--ref=<ref_file>]... <old-file> <index-file>
   rs-diff delta <index-file> <new-file> <delta-file>
   rs-diff patch [--ref=<ref>] <old-file> <delta-file> <new-file>
   rs-diff (-h | --help)
   rs-diff --version 
 
 Options:
-  -h --help     Show this screen.
+  -h --help             Show this screen.
+  --blocksize=<bytes>   Blocksize in bytes [default: 4096]
 ";
 
 #[derive(RustcDecodable)]
@@ -42,6 +42,7 @@ struct Args {
     cmd_delta: bool,
     cmd_patch: bool,
     flag_ref: Vec<String>,
+    flag_blocksize: usize,
     arg_old_file: String,
     arg_index_file: String,
     arg_new_file: String,
@@ -73,7 +74,8 @@ fn main() {
                              });
 
     let result = if args.cmd_index {
-        do_index(args.flag_ref, args.arg_old_file, args.arg_index_file)
+        do_index(args.flag_ref, args.arg_old_file, args.arg_index_file,
+                 args.flag_blocksize)
     } else if args.cmd_delta {
         do_delta(args.arg_index_file, args.arg_new_file, args.arg_delta_file)
     } else {
@@ -92,23 +94,26 @@ fn main() {
 }
 
 /// 'index' command: write the index file.
-fn do_index(references: Vec<String>,
-            old_file: String, index_file: String)
+fn do_index(references: Vec<String>, old_file: String, index_file: String,
+            blocksize: usize)
     -> io::Result<()>
 {
     let index = try!(File::create(index_file));
 
     // Hash all the reference files
-    let hashes = try!(hash_files([old_file].iter().chain(references.iter())));
+    let hashes = try!(hash_files([old_file].iter().chain(references.iter()),
+                                 blocksize));
 
     // Write out the hashes
     write_index(index, hashes)
 }
 
-fn hash_files<'a, I: Iterator<Item=&'a String>>(filenames: I)
+fn hash_files<'a, I: Iterator<Item=&'a String>>(filenames: I, blocksize: usize)
     -> io::Result<DefaultHashes>
 {
-    let mut hashes: DefaultHashes = Default::default();
+    info!("Creating index, blocksize = {}", blocksize);
+    let mut hashes: DefaultHashes = DefaultHashes::new(adler32_sha1,
+                                                       blocksize);
     for filename in filenames {
         let path = Path::new(&filename).to_owned();
         info!("Indexing {}", path.to_string_lossy());
@@ -123,6 +128,7 @@ fn write_index(index: File, hashes: DefaultHashes) -> io::Result<()> {
     let mut index = io::BufWriter::new(index);
     try!(index.write_all(b"RS-SYNCI"));
     try!(index.write_u16::<BigEndian>(0x0001)); // 0.1
+    try!(index.write_u32::<BigEndian>(hashes.blocksize() as u32));
     try!(index.write_u32::<BigEndian>(hashes.blocks().len() as u32));
     for h in hashes.blocks().keys() {
         try!(index.write_u32::<BigEndian>(h.adler32));
@@ -142,7 +148,7 @@ fn read<'a, R: Read>(file: &mut R, buffer: &'a mut [u8], size: usize)
 }
 
 fn read_index<R: Read>(index: R)
-    -> io::Result<HashMap<u32, HashSet<[u8; 20]>>>
+    -> io::Result<(HashMap<u32, HashSet<[u8; 20]>>, usize)>
 {
     let mut hashes: HashMap<u32, HashSet<[u8; 20]>> = HashMap::new();
     let mut index = io::BufReader::new(index);
@@ -158,8 +164,10 @@ fn read_index<R: Read>(index: R)
                                            {}.{}",
                                           version >> 8, version & 0xFF)));
     }
+    let blocksize = try!(index.read_u32::<BigEndian>()) as usize;
     let nb_hashes = try!(index.read_u32::<BigEndian>());
-    info!("Index file is version {}.{}", version >> 8, version & 0xFF);
+    info!("Index file is version {}.{}. blocksize = {}, {} hashes",
+          version >> 8, version & 0xFF, blocksize, nb_hashes);
     for _ in 0..nb_hashes {
         let adler32 = try!(index.read_u32::<BigEndian>());
         info!("Read Adler32: {}", adler32);
@@ -191,7 +199,7 @@ fn read_index<R: Read>(index: R)
         return Err(io::Error::new(io::ErrorKind::InvalidData,
                                   "Trailing data at end of file"));
     }
-    Ok(hashes)
+    Ok((hashes, blocksize))
 }
 
 /// 'delta' command: write the delta file.
@@ -199,7 +207,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     -> io::Result<()>
 {
     let delta = try!(File::create(&delta_file));
-    let hashes = {
+    let (hashes, blocksize) = {
         let index = try!(File::open(&index_file));
         info!("Reading index file {}...", index_file);
         try!(read_index(index))
@@ -211,14 +219,15 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     let mut delta = io::BufWriter::new(delta);
     try!(delta.write_all(b"RS-SYNCD"));
     try!(delta.write_u16::<BigEndian>(0x0001)); // 0.1
+    try!(delta.write_u32::<BigEndian>(blocksize as u32));
 
     // Reads the file by blocks
     loop {
         let block_start = pos;
         info!("Starting scan at position {}", pos);
 
-        // Reads max 4096 bytes
-        let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
+        // Reads max one block
+        let mut buffer = vec![0u8; blocksize];
         let read = try!(file.read_retry(&mut buffer));
         if read == 0 {
             return Ok(());
@@ -236,9 +245,9 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                       pos, adler32.hash());
                 let sha1 = {
                     let buf_pos = ((pos - block_start) as usize
-                                   - read as usize) % 4096;
+                                   - read as usize) % blocksize;
                     let mut hasher = Sha1::new();
-                    if read == 4096 {
+                    if read == blocksize {
                         hasher.update(&buffer[buf_pos..]);
                         hasher.update(&buffer[..buf_pos]);
                     } else {
@@ -298,8 +307,8 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
             }
 
             {
-                let idx = (pos % 4096) as usize;
-                adler32.remove(4096, buffer[idx]);
+                let idx = (pos % (blocksize as u64)) as usize;
+                adler32.remove(blocksize, buffer[idx]);
                 if try!(file.read(&mut buffer[idx..idx + 1])) == 0 {
                     // End of file, write last unknown block
                     let len = (pos - block_start) as usize;
@@ -326,9 +335,6 @@ fn do_patch(references: Vec<String>,
             old_file: String, delta_file: String, new_file: String)
     -> io::Result<()>
 {
-    // Hash all the reference files
-    let hashes = try!(hash_files([old_file].iter().chain(references.iter())));
-
     // Open the new file
     let mut file = try!(File::create(new_file));
 
@@ -346,6 +352,11 @@ fn do_patch(references: Vec<String>,
                                            {}.{}",
                                           version >> 8, version & 0xFF)));
     }
+    let blocksize = try!(delta.read_u32::<BigEndian>()) as usize;
+
+    // Hash all the reference files
+    let hashes = try!(hash_files([old_file].iter().chain(references.iter()),
+                                 blocksize));
 
     loop {
         match delta.read_u8() {
@@ -389,7 +400,7 @@ fn do_patch(references: Vec<String>,
                         let mut origin = try!(File::open(&loc.file));
                         try!(origin.seek(io::SeekFrom::Start(loc.offset)));
                         let copied = try!(copy(&mut origin, &mut file,
-                                               CopyMode::Maximum(4096)));
+                                               CopyMode::Maximum(blocksize)));
                         info!("Copied {} bytes", copied);
                     }
                 }

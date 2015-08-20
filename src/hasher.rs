@@ -14,18 +14,19 @@ pub struct BlockLocation<F> {
 
 pub struct Hashes<F, H, HF: Fn(&[u8]) -> H> where F: Clone, H: Eq + Hash {
     blocks: HashMap<H, BlockLocation<F>>,
+    blocksize: usize,
     hasher: HF,
 }
 
 impl<F, H, HF: Fn(&[u8]) -> H> Hashes<F, H, HF> where F: Clone, H: Eq + Hash {
-    pub fn new(hasher: HF) -> Hashes<F, H, HF> {
-        Hashes { blocks: HashMap::new(), hasher: hasher }
+    pub fn new(hasher: HF, blocksize: usize) -> Hashes<F, H, HF> {
+        Hashes { blocks: HashMap::new(), blocksize: blocksize, hasher: hasher }
     }
 
     pub fn hash<R: io::Read>(&mut self, file: F, mut reader: R)
         -> io::Result<()>
     {
-        let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
+        let mut buffer = vec![0u8; self.blocksize];
         let mut offset = 0;
         loop {
             let n = try!(reader.read_retry(&mut buffer));
@@ -47,6 +48,10 @@ impl<F, H, HF: Fn(&[u8]) -> H> Hashes<F, H, HF> where F: Clone, H: Eq + Hash {
 
     pub fn blocks(&self) -> &HashMap<H, BlockLocation<F>> {
         &self.blocks
+    }
+
+    pub fn blocksize(&self) -> usize {
+        self.blocksize
     }
 }
 
@@ -78,6 +83,6 @@ pub type DefaultHashes = Hashes<::std::path::PathBuf, Adler32_SHA1,
 
 impl Default for DefaultHashes {
     fn default() -> DefaultHashes {
-        DefaultHashes::new(adler32_sha1)
+        DefaultHashes::new(adler32_sha1, 4096)
     }
 }

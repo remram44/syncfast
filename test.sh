@@ -4,7 +4,7 @@ export RUST_LOG=debug
 
 echo
 echo '$ index' /passwd index
-target/debug/diff index /etc/passwd /tmp/index
+target/debug/diff index --blocksize=512 /etc/passwd /tmp/index
 
 echo
 echo '$ delta' index /passwd deltaPP
