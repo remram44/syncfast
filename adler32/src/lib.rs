@@ -74,7 +74,7 @@ pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
     let mut adler: u32 = 1;
     let mut sum2: u32 = 0;
 
-    let mut buf: [u8; NMAX] = unsafe { ::std::mem::uninitialized() };
+    let mut buf = vec![0u8; NMAX];
 
     // do length NMAX blocks -- requires just one modulo operation
     let mut len = try!(reader.read(&mut buf));
