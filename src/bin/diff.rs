@@ -220,6 +220,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     try!(delta.write_all(b"RS-SYNCD"));
     try!(delta.write_u16::<BigEndian>(0x0001)); // 0.1
     try!(delta.write_u32::<BigEndian>(blocksize as u32));
+    try!(delta.write_u16::<BigEndian>(0)); // Single-file mode
 
     // Reads the file by blocks
     loop {
@@ -353,6 +354,11 @@ fn do_patch(references: Vec<String>,
                                           version >> 8, version & 0xFF)));
     }
     let blocksize = try!(delta.read_u32::<BigEndian>()) as usize;
+    if try!(delta.read_u16::<BigEndian>()) != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  "Delta file has multiple files, which is \
+                                   not yet supported"));
+    }
 
     // Hash all the reference files
     let hashes = try!(hash_files([old_file].iter().chain(references.iter()),
