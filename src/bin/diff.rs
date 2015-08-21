@@ -220,6 +220,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     try!(delta.write_all(b"RS-SYNCD"));
     try!(delta.write_u16::<BigEndian>(0x0001)); // 0.1
     try!(delta.write_u32::<BigEndian>(blocksize as u32));
+    try!(delta.write_u16::<BigEndian>(0)); // Single-file mode
 
     // Reads the file by blocks
     loop {
@@ -230,6 +231,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
         let mut buffer = vec![0u8; blocksize];
         let read = try!(file.read_retry(&mut buffer));
         if read == 0 {
+            try!(delta.write_u8(0x00)); // ENDFILE
             return Ok(());
         }
         pos += read as u64;
@@ -353,20 +355,26 @@ fn do_patch(references: Vec<String>,
                                           version >> 8, version & 0xFF)));
     }
     let blocksize = try!(delta.read_u32::<BigEndian>()) as usize;
+    if try!(delta.read_u16::<BigEndian>()) != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  "Delta file has multiple files, which is \
+                                   not yet supported"));
+    }
 
     // Hash all the reference files
     let hashes = try!(hash_files([old_file].iter().chain(references.iter()),
                                  blocksize));
 
     loop {
-        match delta.read_u8() {
-            Ok(0x01) => { // LITERAL
+        match try!(delta.read_u8()) {
+            0x00 => break,
+            0x01 => { // LITERAL
                 info!("Literal block");
                 let len = try!(delta.read_u16::<BigEndian>()) as usize + 1;
                 info!("Size: {}", len);
                 try!(copy(&mut delta, &mut file, CopyMode::Exact(len)));
             }
-            Ok(0x02) => { // KNOWN_BLOCK
+            0x02 => { // KNOWN_BLOCK
                 info!("Known block");
                 let adler32 = match delta.read_u32::<BigEndian>() {
                     Err(byteorder::Error::UnexpectedEOF) => {
@@ -405,15 +413,16 @@ fn do_patch(references: Vec<String>,
                     }
                 }
             }
-            Ok(c) => {
+            c => {
                 error!("Invalid command {:02X}", c);
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
                                           "Invalid delta command"));
             }
-            Err(byteorder::Error::UnexpectedEOF) => break,
-            Err(byteorder::Error::Io(e)) => return Err(e),
         }
     }
-
+    if try!(delta.read(&mut [0u8])) != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  "Trailing data at end of file"));
+    }
     Ok(())
 }
