@@ -10,6 +10,9 @@ pub trait ReadRetry: Read {
     /// The downside is that if an error is returned, an unknown number of
     /// bytes might have been read.
     fn read_retry(&mut self, buffer: &mut [u8]) -> io::Result<usize>;
+
+    /// Read an exact size into a buffer or fail.
+    fn read_exact_(&mut self, buffer: &mut [u8]) -> io::Result<()>;
 }
 
 impl<R: Read> ReadRetry for R {
@@ -34,6 +37,14 @@ impl<R: Read> ReadRetry for R {
             }
         }
         Ok(read)
+    }
+
+    fn read_exact_(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+        if try!(self.read_retry(buffer)) != buffer.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                      "Unexpected end of file"));
+        }
+        Ok(())
     }
 }
 

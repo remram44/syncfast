@@ -137,23 +137,15 @@ fn write_index(index: File, hashes: DefaultHashes) -> io::Result<()> {
     Ok(())
 }
 
-fn read<'a, R: Read>(file: &mut R, buffer: &'a mut [u8], size: usize)
-    -> io::Result<&'a [u8]>
-{
-    if try!(file.read_retry(&mut buffer[..size])) != size {
-        return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                  "Unexpected end of file"));
-    }
-    Ok(&buffer[..size])
-}
-
+/// Read an index file into an object for Adler32 then SHA-1 lookups.
 fn read_index<R: Read>(index: R)
     -> io::Result<(HashMap<u32, HashSet<[u8; 20]>>, usize)>
 {
     let mut hashes: HashMap<u32, HashSet<[u8; 20]>> = HashMap::new();
     let mut index = io::BufReader::new(index);
     let mut buffer: [u8; 8] = unsafe { ::std::mem::uninitialized() };
-    if try!(read(&mut index, &mut buffer, 8)) != b"RS-SYNCI" {
+    try!(index.read_exact_(&mut buffer));
+    if &buffer != b"RS-SYNCI" {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
                                   "Invalid index file"));
     }
@@ -343,7 +335,8 @@ fn do_patch(references: Vec<String>,
     // Read the delta file
     let mut delta = io::BufReader::new(try!(File::open(delta_file)));
     let mut buffer: [u8; 8] = unsafe { ::std::mem::uninitialized() };
-    if try!(read(&mut delta, &mut buffer, 8)) != b"RS-SYNCD" {
+    try!(delta.read_exact_(&mut buffer));
+    if &buffer != b"RS-SYNCD" {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
                                   "Invalid delta file"));
     }
