@@ -131,7 +131,7 @@ fn read_index<R: Read>(index: R)
 {
     let mut hashes: HashMap<u32, HashSet<[u8; 20]>> = HashMap::new();
     let mut index = io::BufReader::new(index);
-    let mut buffer: [u8; 8] = unsafe { ::std::mem::uninitialized() };
+    let mut buffer = [0u8; 8];
     try!(index.read_exact_(&mut buffer));
     if &buffer != b"RS-SYNCI" {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
@@ -151,7 +151,7 @@ fn read_index<R: Read>(index: R)
     for _ in 0..nb_hashes {
         let adler32 = try!(index.read_u32::<BigEndian>());
         info!("Read Adler32: {}", adler32);
-        let mut sha1: [u8; 20] = unsafe { ::std::mem::uninitialized() };
+        let mut sha1 = [0u8; 20];
         if try!(index.read(&mut sha1)) != 20 {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                                       "Unexpected end of file"));
@@ -217,15 +217,17 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     // Reads the file by blocks
     loop {
         let block_start = pos;
-        info!("Starting scan at position {}", pos);
+        info!("Now at position {}", pos);
 
         // Reads max one block
         let mut buffer = vec![0u8; blocksize];
         let read = try!(file.read_retry(&mut buffer));
         if read == 0 {
+            info!("End of file");
             try!(delta.write_u8(0x00)); // ENDFILE
             return Ok(());
         }
+        info!("Starting scan");
         pos += read as u64;
 
         // Hash it
@@ -248,9 +250,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                         assert!(buf_pos == 0);
                         hasher.update(&buffer[..read]);
                     }
-                    let mut digest: [u8; 20] = unsafe {
-                        ::std::mem::uninitialized()
-                    };
+                    let mut digest = [0u8; 20];
                     hasher.output(&mut digest);
                     digest
                 };
@@ -334,7 +334,7 @@ fn do_patch(references: Vec<String>,
 
     // Read the delta file
     let mut delta = io::BufReader::new(try!(File::open(delta_file)));
-    let mut buffer: [u8; 8] = unsafe { ::std::mem::uninitialized() };
+    let mut buffer = [0u8; 8];
     try!(delta.read_exact_(&mut buffer));
     if &buffer != b"RS-SYNCD" {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
@@ -378,9 +378,7 @@ fn do_patch(references: Vec<String>,
                     Ok(n) => n,
                 };
                 let sha1 = {
-                    let mut buf: [u8; 20] = unsafe {
-                        ::std::mem::uninitialized()
-                    };
+                    let mut buf = [0u8; 20];
                     if try!(delta.read_retry(&mut buf)) != 20 {
                         return Err(io::Error::new(io::ErrorKind::InvalidData,
                                                   "Unexpected end of file"));

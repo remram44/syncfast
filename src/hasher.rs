@@ -68,7 +68,7 @@ pub fn adler32_sha1(block: &[u8]) -> Adler32_SHA1 {
     let sha1 = {
         let mut sha1 = Sha1::new();
         sha1.update(block);
-        let mut digest: [u8; 20] = unsafe { ::std::mem::uninitialized() };
+        let mut digest = [0u8; 20];
         sha1.output(&mut digest);
         digest
     };

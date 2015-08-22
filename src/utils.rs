@@ -70,7 +70,7 @@ pub fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W,
                                what: CopyMode)
     -> io::Result<usize>
 {
-    let mut buffer: [u8; 4096] = unsafe { ::std::mem::uninitialized() };
+    let mut buffer = [0u8; 4096];
     let mut copied = 0;
     while match what {
         CopyMode::All => true,
@@ -104,5 +104,5 @@ pub fn to_hex(sha1: &[u8]) -> String {
     for sha1byte in sha1.iter() {
         write!(hexdigest, "{:02X}", sha1byte).unwrap();
     }
-    unsafe { String::from_utf8_unchecked(hexdigest) }
+    String::from_utf8(hexdigest).unwrap()
 }
