@@ -18,7 +18,7 @@ use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 use docopt::Docopt;
 use log::LogLevel;
 use rs_sync::{Adler32_SHA1, adler32_sha1, DefaultHashes};
-use rs_sync::utils::{copy, CopyMode, ReadRetry, to_hex};
+use rs_sync::utils::{copy, CopyMode, ReadExt, to_hex};
 use sha1::Sha1;
 
 static USAGE: &'static str = "
@@ -175,10 +175,7 @@ fn read_index<R: Read>(index: R)
             assert!(hashes.insert(adler32, set).is_none());
         }
     }
-    if try!(index.read(&mut [0u8])) != 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                  "Trailing data at end of file"));
-    }
+    try!(index.read_eof());
     Ok((hashes, blocksize))
 }
 
@@ -416,9 +413,6 @@ fn do_patch(references: Vec<String>,
             }
         }
     }
-    if try!(delta.read(&mut [0u8])) != 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                  "Trailing data at end of file"));
-    }
+    try!(delta.read_eof());
     Ok(())
 }

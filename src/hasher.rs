@@ -4,7 +4,7 @@ use std::hash::Hash;
 use std::io;
 
 use adler32::adler32;
-use super::utils::{ReadRetry, to_hex};
+use super::utils::{ReadExt, to_hex};
 use sha1::Sha1;
 
 pub struct BlockLocation<F> {

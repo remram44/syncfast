@@ -1,7 +1,7 @@
 use std::cmp::min;
 use std::io::{self, Read, Write};
 
-pub trait ReadRetry: Read {
+pub trait ReadExt: Read {
     /// Wrapper for `Read::read()` that retries when interrupted
     ///
     /// This will never fail with `ErrorKind::Interrupted`, and will only
@@ -11,11 +11,14 @@ pub trait ReadRetry: Read {
     /// bytes might have been read.
     fn read_retry(&mut self, buffer: &mut [u8]) -> io::Result<usize>;
 
-    /// Read an exact size into a buffer or fail.
+    /// Reads an exact size into a buffer or fail.
     fn read_exact_(&mut self, buffer: &mut [u8]) -> io::Result<()>;
+
+    /// Asserts that you reached the end of the file.
+    fn read_eof(&mut self) -> io::Result<()>;
 }
 
-impl<R: Read> ReadRetry for R {
+impl<R: Read> ReadExt for R {
     fn read_retry(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let mut read = 0;
         while read < buffer.len() {
@@ -43,6 +46,14 @@ impl<R: Read> ReadRetry for R {
         if try!(self.read_retry(buffer)) != buffer.len() {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                                       "Unexpected end of file"));
+        }
+        Ok(())
+    }
+
+    fn read_eof(&mut self) -> io::Result<()> {
+        if try!(self.read(&mut [0u8])) != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                      "Trailing data at end of file"));
         }
         Ok(())
     }
