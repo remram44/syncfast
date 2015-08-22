@@ -93,29 +93,16 @@ fn main() {
     }
 }
 
-/// 'index' command: write the index file.
-fn do_index(references: Vec<String>, old_file: String, index_file: String,
-            blocksize: usize)
-    -> io::Result<()>
-{
-    let index = try!(File::create(index_file));
-
-    // Hash all the reference files
-    let hashes = try!(hash_files([old_file].iter().chain(references.iter()),
-                                 blocksize));
-
-    // Write out the hashes
-    write_index(index, hashes)
-}
-
-fn hash_files<'a, I: Iterator<Item=&'a String>>(filenames: I, blocksize: usize)
+/// Hashes files into a Hashes structure from an iterator of filenames.
+fn hash_files<P: AsRef<Path>, I: Iterator<Item=P>>(filenames: I,
+                                                   blocksize: usize)
     -> io::Result<DefaultHashes>
 {
     info!("Creating index, blocksize = {}", blocksize);
     let mut hashes: DefaultHashes = DefaultHashes::new(adler32_sha1,
                                                        blocksize);
     for filename in filenames {
-        let path = Path::new(&filename).to_owned();
+        let path = filename.as_ref().to_owned();
         info!("Indexing {}", path.to_string_lossy());
         let f = try!(File::open(&path));
         try!(hashes.hash(path, f));
@@ -123,6 +110,7 @@ fn hash_files<'a, I: Iterator<Item=&'a String>>(filenames: I, blocksize: usize)
     Ok(hashes)
 }
 
+/// Serializes a Hashes structure into an index file.
 fn write_index(index: File, hashes: DefaultHashes) -> io::Result<()> {
     info!("Writing index file: {} hashes", hashes.blocks().len());
     let mut index = io::BufWriter::new(index);
@@ -192,6 +180,21 @@ fn read_index<R: Read>(index: R)
                                   "Trailing data at end of file"));
     }
     Ok((hashes, blocksize))
+}
+
+/// 'index' command: write the index file.
+fn do_index(references: Vec<String>, old_file: String, index_file: String,
+            blocksize: usize)
+    -> io::Result<()>
+{
+    let index = try!(File::create(index_file));
+
+    // Hash all the reference files
+    let hashes = try!(hash_files([old_file].iter().chain(references.iter()),
+                                 blocksize));
+
+    // Write out the hashes
+    write_index(index, hashes)
 }
 
 /// 'delta' command: write the delta file.
