@@ -467,6 +467,23 @@ fn do_patch(references: Vec<String>,
                     }
                 }
             }
+            0x03 => {
+                let offset = try!(delta.read_u64::<BigEndian>());
+                info!("Back-reference, offset: {}", offset);
+                let pos = try!(file.seek(io::SeekFrom::Current(0)));
+                if offset + (blocksize as u64) < pos {
+                    error!("Invalid offset in back-reference: {}", offset);
+                    return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                              "Invalid offset in \
+                                               back-reference"));
+                }
+                try!(file.seek(io::SeekFrom::Start(offset)));
+                let mut buf = vec![0u8; blocksize];
+                try!(file.read_exact_(&mut buf));
+                try!(file.seek(io::SeekFrom::Start(pos)));
+                try!(file.write(&buf));
+                info!("Copied {} bytes", blocksize);
+            }
             c => {
                 error!("Invalid command {:02X}", c);
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
