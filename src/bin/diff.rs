@@ -256,14 +256,39 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
         // Now we advance while updating the Adler32 hash, until we find a
         // known block or we read 2**16 bytes
         loop {
-            if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
-                info!("Found Adler32 match at position {}: {}",
+            enum Match {
+                No,
+                Old,
+                New(u64),
+            }
+            let mut sha1 = None;
+            let mut match_what = Match::No;
+            if let Some(sha1_hashes) = back_blocks.get(&adler32.hash()) {
+                info!("Found backref Adler32 at position {}: {}",
                       pos, adler32.hash());
-                let sha1 = get_sha1(pos, block_start, &buffer);
+                sha1 = Some(get_sha1(pos, block_start, &buffer));
+                if let Some(offset) = sha1_hashes.get(sha1.as_ref().unwrap()) {
+                    info!("SHA-1 matches; old position: {}", offset);
+                    match_what = Match::New(offset.clone());
+                }
+            }
+            if let Match::No = match_what {
+                if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
+                    info!("Found known Adler32 at position {}: {}",
+                          pos, adler32.hash());
+                    if sha1.is_none() {
+                        sha1 = Some(get_sha1(pos, block_start, &buffer));
+                    }
+                    if sha1_hashes.contains(sha1.as_ref().unwrap()) {
+                        info!("SHA-1 matches");
+                        match_what = Match::Old;
+                    }
+                }
+            }
 
-                if sha1_hashes.contains(&sha1) {
-                    info!("SHA-1 matches");
-
+            match match_what {
+                Match::No => {}
+                _ => {
                     // Write the unmatched part up to the known block
                     if (pos - block_start) as usize > read {
                         let len = (pos - block_start) as usize - read;
@@ -275,35 +300,45 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                                   CopyMode::Exact(len)));
                         try!(file.seek(io::SeekFrom::Start(pos)));
                     }
+                }
+            }
 
+            match match_what {
+                Match::No => {
+                    if (pos - block_start) as usize >= 65536 {
+                        // Write the whole block, so as to not overflow the u16
+                        // block length field
+                        let len = 65536;
+                        info!("No match at position {}, writing unmatched \
+                               block, size {}", pos, len);
+                        try!(delta.write_u8(0x01)); // LITERAL
+                        try!(delta.write_u16::<BigEndian>(0xFFFF));
+                        try!(file.seek(io::SeekFrom::Start(block_start)));
+                        try!(copy(&mut file, &mut delta,
+                                  CopyMode::Exact(len)));
+                        try!(file.seek(io::SeekFrom::Start(pos)));
+                        break;
+                    }
+                }
+                Match::Old => {
                     // Write the reference to the known block
+                    let sha1 = sha1.as_ref().unwrap();
                     if log_enabled!(LogLevel::Info) {
                         info!("Writing known block, Adler32: {}, SHA-1: {}",
-                              adler32.hash(), to_hex(&sha1));
+                              adler32.hash(), to_hex(sha1));
                     }
                     try!(delta.write_u8(0x02)); // KNOWN_BLOCK
                     try!(delta.write_u32::<BigEndian>(adler32.hash()));
-                    try!(delta.write_all(&sha1));
+                    try!(delta.write_all(sha1));
                     break;
-                } else {
-                    let hashes = sha1_hashes.iter().fold(
-                        String::new(),
-                        |mut s, i| { s.push(' '); s.push_str(&to_hex(i)); s });
-                    info!("SHA-1 doesn't match: found {} !={}",
-                          to_hex(&sha1), hashes);
                 }
-            } else if (pos - block_start) as usize >= 65536 {
-                // Write the whole block, so as to not overflow the u16 block
-                // length field
-                let len = 65536;
-                info!("No match at position {}, writing unmatched block, \
-                       size {}", pos, len);
-                try!(delta.write_u8(0x01)); // LITERAL
-                try!(delta.write_u16::<BigEndian>(0xFFFF));
-                try!(file.seek(io::SeekFrom::Start(block_start)));
-                try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
-                try!(file.seek(io::SeekFrom::Start(pos)));
-                break;
+                Match::New(offset) => {
+                    if log_enabled!(LogLevel::Info) {
+                        info!("Writing backref, offset: {}", offset);
+                    }
+                    try!(delta.write_u8(0x03)); // BACKREF
+                    try!(delta.write_u64::<BigEndian>(offset));
+                }
             }
 
             if read == blocksize &&
