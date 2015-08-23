@@ -166,9 +166,7 @@ fn read_index<R: Read>(index: R)
                 set.insert(sha1);
                 false
             }
-            None => {
-                true
-            }
+            None => true,
         } {
             let mut set = HashSet::new();
             set.insert(sha1);
@@ -213,6 +211,8 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
     try!(delta.write_u16::<BigEndian>(0x0001)); // 0.1
     try!(delta.write_u32::<BigEndian>(blocksize as u32));
     try!(delta.write_u16::<BigEndian>(0)); // Single-file mode
+
+    let mut back_blocks: HashMap<u32, HashMap<[u8; 20], u64>> = HashMap::new();
 
     // Reads the file by blocks
     loop {
@@ -298,6 +298,42 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
                 try!(file.seek(io::SeekFrom::Start(pos)));
                 break;
+            }
+
+            if read == blocksize &&
+                (pos - block_start) as usize % blocksize == 0
+            {
+                let adler32 = adler32.hash();
+                let sha1 = {
+                    let buf_pos = ((pos - block_start) as usize
+                                   - read as usize) % blocksize;
+                    let mut hasher = Sha1::new();
+                    if read == blocksize {
+                        hasher.update(&buffer[buf_pos..]);
+                        hasher.update(&buffer[..buf_pos]);
+                    } else {
+                        assert!(buf_pos == 0);
+                        hasher.update(&buffer[..read]);
+                    }
+                    let mut digest = [0u8; 20];
+                    hasher.output(&mut digest);
+                    digest
+                };
+                let offset = pos - read as u64;
+                info!("Storing back-ref to pos {}; Adler32: {}, SHA-1: {}",
+                      offset, adler32, to_hex(&sha1));
+                if match back_blocks.get_mut(&adler32) {
+                    Some(hm) => {
+                        info!("(Adler32 hashes collide)");
+                        hm.insert(sha1, offset);
+                        false
+                    }
+                    None => true,
+                } {
+                    let mut hm = HashMap::new();
+                    hm.insert(sha1, offset);
+                    assert!(back_blocks.insert(adler32, hm).is_none());
+                }
             }
 
             {
