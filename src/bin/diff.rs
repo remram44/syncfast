@@ -233,27 +233,33 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
         // Hash it
         let mut adler32 = RollingAdler32::from_buffer(&buffer[..read]);
 
+        // SHA-1 function: gets SHA-1 digest for current block
+        // Only computed if we found an Adler32 match
+        let get_sha1 = |pos: u64, block_start: u64, buffer: &[u8]|
+            -> [u8; 20]
+        {
+            let buf_pos = ((pos - block_start) as usize
+                           - read as usize) % blocksize;
+            let mut hasher = Sha1::new();
+            if read == blocksize {
+                hasher.update(&buffer[buf_pos..]);
+                hasher.update(&buffer[..buf_pos]);
+            } else {
+                assert!(buf_pos == 0);
+                hasher.update(&buffer[..read]);
+            }
+            let mut digest = [0u8; 20];
+            hasher.output(&mut digest);
+            digest
+        };
+
         // Now we advance while updating the Adler32 hash, until we find a
         // known block or we read 2**16 bytes
         loop {
             if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
                 info!("Found Adler32 match at position {}: {}",
                       pos, adler32.hash());
-                let sha1 = {
-                    let buf_pos = ((pos - block_start) as usize
-                                   - read as usize) % blocksize;
-                    let mut hasher = Sha1::new();
-                    if read == blocksize {
-                        hasher.update(&buffer[buf_pos..]);
-                        hasher.update(&buffer[..buf_pos]);
-                    } else {
-                        assert!(buf_pos == 0);
-                        hasher.update(&buffer[..read]);
-                    }
-                    let mut digest = [0u8; 20];
-                    hasher.output(&mut digest);
-                    digest
-                };
+                let sha1 = get_sha1(pos, block_start, &buffer);
 
                 if sha1_hashes.contains(&sha1) {
                     info!("SHA-1 matches");
@@ -304,21 +310,7 @@ fn do_delta(index_file: String, new_file: String, delta_file: String)
                 (pos - block_start) as usize % blocksize == 0
             {
                 let adler32 = adler32.hash();
-                let sha1 = {
-                    let buf_pos = ((pos - block_start) as usize
-                                   - read as usize) % blocksize;
-                    let mut hasher = Sha1::new();
-                    if read == blocksize {
-                        hasher.update(&buffer[buf_pos..]);
-                        hasher.update(&buffer[..buf_pos]);
-                    } else {
-                        assert!(buf_pos == 0);
-                        hasher.update(&buffer[..read]);
-                    }
-                    let mut digest = [0u8; 20];
-                    hasher.output(&mut digest);
-                    digest
-                };
+                let sha1 = get_sha1(pos, block_start, &buffer);
                 let offset = pos - read as u64;
                 info!("Storing back-ref to pos {}; Adler32: {}, SHA-1: {}",
                       offset, adler32, to_hex(&sha1));
