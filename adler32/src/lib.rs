@@ -1,3 +1,13 @@
+//! A minimal implementation of Adler32 for Rust.
+//!
+//! This provides the simple method adler32(), that exhausts a Read and
+//! computes the Adler32 hash, as well as the RollingAdler32 struct, that can
+//! build a hash byte-by-byte, allowing to 'forget' past bytes in a rolling
+//! fashion.
+//!
+//! The adler32() function has been translated (as accurately as I could
+//! manage) from the zlib implementation.
+
 #[cfg(test)]
 extern crate rand;
 
@@ -5,7 +15,7 @@ use std::io;
 
 // adler32 algorithm and implementation taken from zlib; http://www.zlib.net/
 // It was translated into Rust as accurately as I could manage
-// The (slow) reference was teken from Wikipedia; https://en.wikipedia.org/
+// The (slow) reference was taken from Wikipedia; https://en.wikipedia.org/
 
 /* zlib.h -- interface of the 'zlib' general purpose compression library
   version 1.2.8, April 28th, 2013
@@ -69,6 +79,7 @@ fn do16(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
     do8(adler, sum2, &buf[8..16]);
 }
 
+/// Consume a Read object and returns the Adler32 hash.
 pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
     // initial Adler-32 value
     let mut adler: u32 = 1;
@@ -110,36 +121,47 @@ pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
     Ok(adler | (sum2 << 16))
 }
 
+/// A rolling version of the Adler32 hash, which can 'forget' past bytes.
+///
+/// Calling remove() will update the hash to the value it would have if that
+/// past byte had never been fed to the algorithm. This allows you to get the
+/// hash of a rolling window very efficiently.
 pub struct RollingAdler32 {
     a: u32,
     b: u32,
 }
 
 impl RollingAdler32 {
+    /// Creates an empty Adler32 context (with hash 1).
     pub fn new() -> RollingAdler32 {
         Self::from_value(1)
     }
 
+    /// Creates an Adler32 context with the given initial value.
     pub fn from_value(adler32: u32) -> RollingAdler32 {
         let a = adler32 & 0xFFFF;
         let b = adler32 >> 16;
         RollingAdler32 { a: a, b: b }
     }
 
+    /// Convenience function initializing a context from the hash of a buffer.
     pub fn from_buffer(buffer: &[u8]) -> RollingAdler32 {
         RollingAdler32::from_value(adler32(buffer).unwrap())
     }
 
+    /// Returns the current hash.
     pub fn hash(&self) -> u32 {
         (self.b << 16) | self.a
     }
 
+    /// Removes the given `byte` that was fed to the algorithm `size` bytes ago.
     pub fn remove(&mut self, size: usize, byte: u8) {
         let byte = byte as u32;
         self.a = (self.a + BASE - byte) % BASE;
         self.b = (self.b + BASE - 1 + (BASE - size as u32) * byte) % BASE;
     }
 
+    /// Feeds a new `byte` to the algorithm to update the hash.
     pub fn update(&mut self, byte: u8) {
         let byte = byte as u32;
         self.a = (self.a + byte) % BASE;
