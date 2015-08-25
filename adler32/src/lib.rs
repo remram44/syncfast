@@ -79,48 +79,6 @@ fn do16(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
     do8(adler, sum2, &buf[8..16]);
 }
 
-/// Consume a Read object and returns the Adler32 hash.
-pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
-    // initial Adler-32 value
-    let mut adler: u32 = 1;
-    let mut sum2: u32 = 0;
-
-    let mut buf = vec![0u8; NMAX];
-
-    // do length NMAX blocks -- requires just one modulo operation
-    let mut len = try!(reader.read(&mut buf));
-    while len == NMAX {
-        let mut pos = 0;
-        while pos < NMAX {
-            // 16 sums unrolled
-            do16(&mut adler, &mut sum2, &buf[pos..pos + 16]);
-            pos += 16;
-        }
-        adler %= BASE;
-        sum2 %= BASE;
-        len = try!(reader.read(&mut buf));
-    }
-
-    // do remaining bytes (less than NMAX, still just one modulo)
-    if len > 0 { // avoid modulos if none remaining
-        let mut pos = 0;
-        while len - pos >= 16 {
-            do16(&mut adler, &mut sum2, &buf[pos..pos + 16]);
-            pos += 16;
-        }
-        while len - pos > 0 {
-            adler += buf[pos] as u32;
-            sum2 += adler;
-            pos += 1;
-        }
-        adler %= BASE;
-        sum2 %= BASE;
-    }
-
-    // return recombined sums
-    Ok(adler | (sum2 << 16))
-}
-
 /// A rolling version of the Adler32 hash, which can 'forget' past bytes.
 ///
 /// Calling remove() will update the hash to the value it would have if that
@@ -146,7 +104,9 @@ impl RollingAdler32 {
 
     /// Convenience function initializing a context from the hash of a buffer.
     pub fn from_buffer(buffer: &[u8]) -> RollingAdler32 {
-        RollingAdler32::from_value(adler32(buffer).unwrap())
+        let mut hash = RollingAdler32::new();
+        hash.update_buffer(buffer);
+        hash
     }
 
     /// Returns the current hash.
@@ -167,6 +127,70 @@ impl RollingAdler32 {
         self.a = (self.a + byte) % BASE;
         self.b = (self.b + self.a) % BASE;
     }
+
+    /// Feeds a vector of bytes to the algorithm to update the hash.
+    pub fn update_buffer(&mut self, buffer: &[u8]) {
+        let len = buffer.len();
+
+        // in case user likes doing a byte at a time, keep it fast
+        if len == 1 {
+            self.update(buffer[0]);
+            return;
+        }
+
+        // in case short lengths are provided, keep it somewhat fast
+        if len < 16 {
+            for pos in 0..len {
+                self.a += buffer[pos] as u32;
+                self.b += self.a;
+            }
+            if self.a >= BASE {
+                self.a -= BASE;
+            }
+            self.b %= BASE;
+            return;
+        }
+
+        let mut pos = 0;
+
+        // do length NMAX blocks -- requires just one modulo operation;
+        while pos + NMAX < len {
+            for i in pos..pos + NMAX {
+                // 16 sums unrolled
+                do16(&mut self.a, &mut self.b, &buffer[i..i + 16]);
+                pos += 16;
+            }
+            self.a %= BASE;
+            self.b %= BASE;
+        }
+
+        // do remaining bytes (less than NMAX, still just one modulo)
+        if pos < len { // avoid modulos if none remaining
+            while len - pos >= 16 {
+                do16(&mut self.a, &mut self.b, &buffer[pos..pos + 16]);
+                pos += 16;
+            }
+            while len - pos > 0 {
+                self.a += buffer[pos] as u32;
+                self.b += self.a;
+                pos += 1;
+            }
+            self.a %= BASE;
+            self.b %= BASE;
+        }
+    }
+}
+
+/// Consume a Read object and returns the Adler32 hash.
+pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
+    let mut hash = RollingAdler32::new();
+    let mut buffer = [0u8; NMAX];
+    let mut read = try!(reader.read(&mut buffer));
+    while read > 0 {
+        hash.update_buffer(&buffer[..read]);
+        read = try!(reader.read(&mut buffer));
+    }
+    Ok(hash.hash())
 }
 
 #[cfg(test)]
@@ -193,6 +217,10 @@ mod test {
     #[test]
     fn testvectors() {
         fn do_test(v: u32, bytes: &[u8]) {
+            let mut hash = RollingAdler32::new();
+            hash.update_buffer(&bytes);
+            assert_eq!(hash.hash(), v);
+
             let r = io::Cursor::new(bytes);
             assert_eq!(adler32(r).unwrap(), v);
         }
