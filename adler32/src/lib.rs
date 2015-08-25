@@ -5,8 +5,8 @@
 //! build a hash byte-by-byte, allowing to 'forget' past bytes in a rolling
 //! fashion.
 //!
-//! The adler32() function has been translated (as accurately as I could
-//! manage) from the zlib implementation.
+//! The adler32 code has been translated (as accurately as I could manage) from
+//! the zlib implementation.
 
 #[cfg(test)]
 extern crate rand;

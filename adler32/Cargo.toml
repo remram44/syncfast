@@ -1,6 +1,6 @@
 [package]
 name = "adler32"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Remi Rampin <remirampin@gmail.com>"]
 description = "Minimal Adler32 implementation for Rust."
 documentation = "http://remram44.github.io/rs-sync/adler32/index.html"
