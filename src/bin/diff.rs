@@ -6,10 +6,11 @@ extern crate rustc_serialize;
 
 use std::fs::File;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process;
 
 use docopt::Docopt;
-use rs_sync::diff::{do_patch, hash_files, read_index_file, write_delta_file_single, write_index_file};
+use rs_sync::diff::{apply_diff, hash_files, read_index_file, write_delta_file_single, write_index_file};
 
 static USAGE: &'static str = "
 rdiff clone.
@@ -111,4 +112,14 @@ pub fn do_delta(index_file: String, new_file: String, delta_file: String)
 
     let file = io::BufReader::new(try!(File::open(new_file)));
     write_delta_file_single(&hashes, file, &mut delta, blocksize)
+}
+
+/// 'patch' command: update the old file to get the new file.
+fn do_patch(references: Vec<String>, old_file: String,
+            delta_file: String, new_file: String)
+    -> io::Result<()>
+{
+    let references: Vec<&Path> = references.iter().map(|p| Path::new(p)).collect();
+    apply_diff(references.into_iter(), Path::new(&old_file),
+               Path::new(&delta_file), Path::new(&new_file))
 }

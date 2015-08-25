@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
+use std::iter::once;
 use std::path::Path;
 
 use adler32::RollingAdler32;
@@ -212,7 +213,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                 try!(delta.write_u8(0x01)); // LITERAL
                 try!(delta.write_u16::<BigEndian>(0xFFFF));
                 try!(file.seek(io::SeekFrom::Start(block_start)));
-                try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
+                try!(copy(file, delta, CopyMode::Exact(len)));
                 try!(file.seek(io::SeekFrom::Start(pos)));
                 break;
             }
@@ -241,10 +242,10 @@ fn write_delta<I: Read + Seek, O: Write>(
     }
 }
 
-/// 'patch' command: update the old file to get the new file.
-pub fn apply_diff</*P: AsRef<Path>, */I: Iterator<Item=Path>>(
-        references: I,
-        old_file: &Path, delta_file: &Path, new_file: &Path)
+/// Apply the delta to a file to get the new file.
+pub fn apply_diff<'a, I: Iterator<Item=&'a Path>>(
+        references: I, old_file: &'a Path,
+        delta_file: &'a Path, new_file: &'a Path)
     -> io::Result<()>
 {
     // Read the delta file
@@ -270,7 +271,7 @@ pub fn apply_diff</*P: AsRef<Path>, */I: Iterator<Item=Path>>(
     }
 
     // Hash all the reference files
-    let hashes = try!(hash_files([old_file].iter().chain(references),
+    let hashes = try!(hash_files(once(old_file).chain(references),
                                  blocksize));
 
     // Open the new file
