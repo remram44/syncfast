@@ -91,14 +91,14 @@ pub fn do_index(references: Vec<String>, old_file: String, index_file: String,
                 blocksize: usize)
     -> io::Result<()>
 {
-    let index = try!(File::create(index_file));
+    let mut index = io::BufWriter::new(try!(File::create(index_file)));
 
     // Hash all the reference files
     let hashes = try!(hash_files([old_file].iter().chain(references.iter()),
                                  blocksize));
 
     // Write out the hashes
-    write_index_file(index, hashes)
+    write_index_file(&mut index, &hashes)
 }
 
 /// 'delta' command: write the delta file.

@@ -14,8 +14,7 @@ pub fn hash_files<P: AsRef<Path>, I: Iterator<Item=P>>(filenames: I,
     -> io::Result<DefaultHashes>
 {
     info!("Creating index, blocksize = {}", blocksize);
-    let mut hashes: DefaultHashes = DefaultHashes::new(adler32_sha1,
-                                                       blocksize);
+    let mut hashes = DefaultHashes::new(adler32_sha1, blocksize);
     for filename in filenames {
         let path = filename.as_ref().to_owned();
         info!("Indexing {}", path.to_string_lossy());
@@ -26,9 +25,10 @@ pub fn hash_files<P: AsRef<Path>, I: Iterator<Item=P>>(filenames: I,
 }
 
 /// Serializes a Hashes structure into an index file.
-pub fn write_index_file(index: File, hashes: DefaultHashes) -> io::Result<()> {
+pub fn write_index_file<W: Write>(index: &mut W, hashes: &DefaultHashes)
+    -> io::Result<()>
+{
     info!("Writing index file: {} hashes", hashes.blocks().len());
-    let mut index = io::BufWriter::new(index);
     try!(index.write_all(b"RS-SYNCI"));
     try!(index.write_u16::<BigEndian>(0x0001)); // 0.1
     try!(index.write_u32::<BigEndian>(hashes.blocksize() as u32));
