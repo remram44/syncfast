@@ -10,7 +10,9 @@ use std::path::Path;
 use std::process;
 
 use docopt::Docopt;
-use rs_sync::diff::{apply_diff, hash_files, read_index_file, write_delta_file_single, write_index_file};
+use rs_sync::index::{hash_files, read_index_file, write_index_file};
+use rs_sync::delta::write_delta_file_single;
+use rs_sync::patch::apply_diff;
 
 static USAGE: &'static str = "
 rdiff clone.
