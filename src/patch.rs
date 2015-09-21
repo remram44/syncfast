@@ -89,6 +89,7 @@ pub fn apply_diff<'a, I: Iterator<Item=&'a Path>>(
                     }
                 }
             }
+            0x03 => unimplemented!(),
             c => {
                 error!("Invalid command {:02X}", c);
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
