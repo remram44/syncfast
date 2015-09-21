@@ -178,6 +178,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                     }
                     try!(delta.write_u8(0x03)); // BACKREF
                     try!(delta.write_u64::<BigEndian>(offset));
+                    break;
                 }
             }
 
