@@ -46,7 +46,7 @@ fn test_index() {
 
 #[test]
 fn test_delta() {
-    let new_file: &[u8] = b"aaaammmmsbbbbsmmmmZZ";
+    let new_file: &[u8] = b"aaaammmmsbbbbssssmmmmttttZZ";
     let new_file = Cursor::new(new_file);
     let mut hashes = HashMap::new();
     for &(a, s) in [h_a, h_b, h_z].iter() {
@@ -80,10 +80,16 @@ fn test_delta() {
     expected.write(h_b.1);
     // Literal
     expected.write_u8(0x01);
-    expected.write_u16::<BigEndian>(7 - 1);
-    expected.extend(b"smmmmZZ");
-    // TODO: Back reference here
+    expected.write_u16::<BigEndian>(4 - 1);
+    expected.extend(b"ssss");
+    // Back reference
+    expected.write_u8(0x03);
+    expected.write_u16::<BigEndian>(0);
+    expected.write_u64::<BigEndian>(4);
     // TODO: should be a known block here
+    expected.write_u8(0x01);
+    expected.write_u16::<BigEndian>(6 - 1);
+    expected.extend(b"ttttZZ");
     /*// Known block
     expected.write_u8(0x01);
     expected.write_u32::<BigEndian>(h_z.0);

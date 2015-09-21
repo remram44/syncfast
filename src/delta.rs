@@ -45,6 +45,8 @@ fn write_delta<I: Read + Seek, O: Write>(
 {
     let mut pos: u64 = 0;
 
+    let mut back_blocks: HashMap<u32, HashMap<[u8; 20], u64>> = HashMap::new();
+
     // Reads the file by blocks
     loop {
         let block_start = pos;
@@ -64,31 +66,70 @@ fn write_delta<I: Read + Seek, O: Write>(
         // Hash it
         let mut adler32 = RollingAdler32::from_buffer(&buffer[..read]);
 
+        // SHA-1 function: gets SHA-1 digest for current block
+        // Only computed if we found an Adler32 match
+        let get_sha1 = |pos: u64, block_start: u64, buffer: &[u8]| -> [u8; 20] {
+            let buf_pos = ((pos - block_start) as usize
+                           - read as usize) % blocksize;
+            let mut hasher = Sha1::new();
+            if read == blocksize {
+                hasher.update(&buffer[buf_pos..]);
+                hasher.update(&buffer[..buf_pos]);
+            } else {
+                assert!(buf_pos == 0);
+                hasher.update(&buffer[..read]);
+            }
+            let mut digest = [0u8; 20];
+            hasher.output(&mut digest);
+            digest
+        };
+
         // Now we advance while updating the Adler32 hash, until we find a
         // known block or we read 2**16 bytes
         loop {
-            if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
-                info!("Found Adler32 match at position {}-{}: {}",
+            enum Match {
+                No,
+                Old,
+                New(u64)
+            }
+            let mut sha1 = None;
+            let mut match_what = Match::No;
+            if let Some(sha1_hashes) = back_blocks.get(&adler32.hash()) {
+                info!("Found backref Adler32 at position {}-{}: {}",
                       pos - read as u64, pos, adler32.hash());
-                let sha1 = {
-                    let buf_pos = ((pos - block_start) as usize
-                                   - read as usize) % blocksize;
-                    let mut hasher = Sha1::new();
-                    if read == blocksize {
-                        hasher.update(&buffer[buf_pos..]);
-                        hasher.update(&buffer[..buf_pos]);
-                    } else {
-                        assert!(buf_pos == 0);
-                        hasher.update(&buffer[..read]);
+                sha1 = Some(get_sha1(pos, block_start, &buffer));
+                if let Some(offset) = sha1_hashes.get(sha1.as_ref().unwrap()) {
+                    info!("SHA-1 matches; old position: {}", offset);
+                    match_what = Match::New(offset.clone());
+                } else {
+                    let hashes = sha1_hashes.iter().fold(
+                        String::new(),
+                        |mut s, (i, _)| {
+                            s.push(' ');
+                            s.push_str(&to_hex(i));
+                            s
+                        });
+                    info!("SHA-1 doesn't match: found {} != {}",
+                          to_hex(sha1.as_ref().unwrap()), hashes);
+                }
+            }
+            if let Match::No = match_what {
+                if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
+                    info!("Found known Adler32 match at position {}-{}: {}",
+                          pos - read as u64, pos, adler32.hash());
+                    if sha1.is_none() {
+                        sha1 = Some(get_sha1(pos, block_start, &buffer));
                     }
-                    let mut digest = [0u8; 20];
-                    hasher.output(&mut digest);
-                    digest
-                };
+                    if sha1_hashes.contains(sha1.as_ref().unwrap()) {
+                        info!("SHA-1 matches");
+                        match_what = Match::Old;
+                    }
+                }
+            }
 
-                if sha1_hashes.contains(&sha1) {
-                    info!("SHA-1 matches");
-
+            match match_what {
+                Match::No => {}
+                _ => {
                     // Write the unmatched part up to the known block
                     if (pos - block_start) as usize > read {
                         let len = (pos - block_start) as usize - read;
@@ -100,35 +141,68 @@ fn write_delta<I: Read + Seek, O: Write>(
                                   CopyMode::Exact(len)));
                         try!(file.seek(io::SeekFrom::Start(pos)));
                     }
+                }
+            }
 
+            match match_what {
+                Match::No => {
+                    if (pos - block_start) as usize >= 65536 {
+                        // Write the whole block, so as to not overflow the u16
+                        // block length field
+                        let len = 65536;
+                        info!("No match at position {}, writing unmatched \
+                               block, size {}", pos, len);
+                        try!(delta.write_u8(0x01)); // LITERAL
+                        try!(delta.write_u16::<BigEndian>(0xFFFF));
+                        try!(file.seek(io::SeekFrom::Start(block_start)));
+                        try!(copy(file, delta, CopyMode::Exact(len)));
+                        try!(file.seek(io::SeekFrom::Start(pos)));
+                        break;
+                    }
+                }
+                Match::Old => {
                     // Write the reference to the known block
+                    let sha1 = sha1.as_ref().unwrap();
                     if log_enabled!(LogLevel::Info) {
                         info!("Writing known block, Adler32: {}, SHA-1: {}",
-                              adler32.hash(), to_hex(&sha1));
+                              adler32.hash(), to_hex(sha1));
                     }
                     try!(delta.write_u8(0x02)); // KNOWN_BLOCK
                     try!(delta.write_u32::<BigEndian>(adler32.hash()));
-                    try!(delta.write_all(&sha1));
+                    try!(delta.write_all(sha1));
                     break;
-                } else {
-                    let hashes = sha1_hashes.iter().fold(
-                        String::new(),
-                        |mut s, i| { s.push(' '); s.push_str(&to_hex(i)); s });
-                    info!("SHA-1 doesn't match: found {} !={}",
-                          to_hex(&sha1), hashes);
                 }
-            } else if (pos - block_start) as usize >= 65536 {
-                // Write the whole block, so as to not overflow the u16 block
-                // length field
-                let len = 65536;
-                info!("No match at position {}, writing unmatched block, \
-                       size {}", pos, len);
-                try!(delta.write_u8(0x01)); // LITERAL
-                try!(delta.write_u16::<BigEndian>(0xFFFF));
-                try!(file.seek(io::SeekFrom::Start(block_start)));
-                try!(copy(file, delta, CopyMode::Exact(len)));
-                try!(file.seek(io::SeekFrom::Start(pos)));
-                break;
+                Match::New(offset) => {
+                    if log_enabled!(LogLevel::Info) {
+                        info!("Writing backref, offset: {}", offset);
+                    }
+                    try!(delta.write_u8(0x03)); // BACKREF
+                    try!(delta.write_u16::<BigEndian>(0));
+                    try!(delta.write_u64::<BigEndian>(offset));
+                    break;
+                }
+            }
+
+            if read == blocksize &&
+                (pos - block_start) as usize % blocksize == 0
+            {
+                let adler32 = adler32.hash();
+                let sha1 = get_sha1(pos, block_start, &buffer);
+                let offset = pos - read as u64;
+                info!("Recording back-ref to pos {}; Adler32: {}, SHA-1: {}",
+                      offset, adler32, to_hex(&sha1));
+                if match back_blocks.get_mut(&adler32) {
+                    Some(hm) => {
+                        info!("(Adler32 hashes collide)");
+                        hm.insert(sha1, offset);
+                        false
+                    }
+                    None => true,
+                } {
+                    let mut hm = HashMap::new();
+                    hm.insert(sha1, offset);
+                    assert!(back_blocks.insert(adler32, hm).is_none());
+                }
             }
 
             {

@@ -28,6 +28,10 @@ All numbers are big-endian.
       * Adler32 hash, 4 bytes
       * SHA-1 hash, 20 bytes
     * Or:
+      * `\x03`, "BACKREF"
+      * File number where first reference occurred, 2 bytes
+      * Offset in file where reference occurred, 8 bytes
+    * Or:
       * `\x00`, "ENDFILE"
       * Indicates end of this file's blocks
   * Total size of file in bytes, 8 bytes
