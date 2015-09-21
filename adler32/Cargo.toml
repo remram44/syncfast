@@ -1,7 +1,12 @@
 [package]
 name = "adler32"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Remi Rampin <remirampin@gmail.com>"]
+description = "Minimal Adler32 implementation for Rust."
+documentation = "http://remram44.github.io/rs-sync/adler32/index.html"
+repository = "https://github.com/remram44/rs-sync/tree/master/adler32"
+keywords = ["adler32", "hash", "rolling"]
+license = "BSD-3-Clause"
 
 [dev-dependencies]
 rand = "*"
