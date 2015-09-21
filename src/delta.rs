@@ -68,8 +68,8 @@ fn write_delta<I: Read + Seek, O: Write>(
         // known block or we read 2**16 bytes
         loop {
             if let Some(sha1_hashes) = hashes.get(&adler32.hash()) {
-                info!("Found Adler32 match at position {}: {}",
-                      pos, adler32.hash());
+                info!("Found Adler32 match at position {}-{}: {}",
+                      pos - read as u64, pos, adler32.hash());
                 let sha1 = {
                     let buf_pos = ((pos - block_start) as usize
                                    - read as usize) % blocksize;
