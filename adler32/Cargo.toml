@@ -9,4 +9,4 @@ keywords = ["adler32", "hash", "rolling"]
 license = "BSD-3-Clause"
 
 [dev-dependencies]
-rand = "*"
+rand = "0.3"
