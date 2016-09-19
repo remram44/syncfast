@@ -154,10 +154,11 @@ impl RollingAdler32 {
         let mut pos = 0;
 
         // do length NMAX blocks -- requires just one modulo operation;
-        while pos + NMAX < len {
-            for i in pos..pos + NMAX {
+        while pos + NMAX <= len {
+            let end = pos + NMAX;
+            while pos < end {
                 // 16 sums unrolled
-                do16(&mut self.a, &mut self.b, &buffer[i..i + 16]);
+                do16(&mut self.a, &mut self.b, &buffer[pos..pos + 16]);
                 pos += 16;
             }
             self.a %= BASE;
@@ -234,6 +235,7 @@ mod test {
                               0123456789");
         do_test(0x97b61069, b"1234567890123456789012345678901234567890\
                               1234567890123456789012345678901234567890");
+        do_test(0xD6251498, &[255; 64000]);
     }
 
     #[test]
