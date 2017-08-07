@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Read, Seek};
+use std::io::{self, Seek};
 use std::iter::once;
 use std::path::Path;
 

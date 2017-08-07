@@ -4,12 +4,10 @@ version = "0.1.0"
 authors = ["Remi Rampin <remirampin@gmail.com>"]
 
 [dependencies]
+adler32 = "1.0"
 byteorder = "*"
 docopt = "0.6.*"
 env_logger = "0.3"
 log = "0.3"
 rustc-serialize = "0.3"  # if you're using `derive(RustcDecodable)`
 sha1 = "*"
-
-[dependencies.adler32]
-path = "adler32"
