@@ -1,21 +1,34 @@
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Seek};
+use std::io::{self, Read, Seek, Write};
 use std::iter::once;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use byteorder::{self, ReadBytesExt, BigEndian};
-use index::hash_files;
-use super::Adler32_SHA1;
+use super::{Adler32_SHA1, DefaultHashes, adler32_sha1};
 use utils::{copy, CopyMode, ReadExt, to_hex};
 
 /// Apply the delta to a file to get the new file.
-pub fn apply_diff<'a, I: Iterator<Item=&'a Path>>(
+pub fn apply_diff<'a, I: Iterator<Item=&'a Path>, R: Read, W: Write>(
         references: I, old_file: &'a Path,
-        delta_file: &'a Path, new_file: &'a Path)
+        delta: R, file: W)
+    -> io::Result<()>
+{
+    let mut sources: HashMap<PathBuf, _> = HashMap::new();
+    for filename in once(old_file).chain(references) {
+        sources.insert(filename.to_path_buf(),
+                       io::BufReader::new(try!(File::open(filename))));
+    }
+    apply_diff_map(sources, delta, file)
+}
+
+/// Apply the delta to a file to get the new file.
+pub fn apply_diff_map<F: Read + Seek, R: Read, W: Write>(
+        mut sources: HashMap<PathBuf, F>,
+        mut delta: R, mut file: W)
     -> io::Result<()>
 {
     // Read the delta file
-    let mut delta = io::BufReader::new(try!(File::open(delta_file)));
     let mut buffer = [0u8; 8];
     try!(delta.read_exact_(&mut buffer));
     if &buffer != b"RS-SYNCD" {
@@ -36,12 +49,11 @@ pub fn apply_diff<'a, I: Iterator<Item=&'a Path>>(
                                    not yet supported"));
     }
 
-    // Hash all the reference files
-    let hashes = try!(hash_files(once(old_file).chain(references),
-                                 blocksize));
-
-    // Open the new file
-    let mut file = try!(File::create(new_file));
+    // Hash all the source files
+    let mut hashes = DefaultHashes::new(adler32_sha1, blocksize);
+    for (filename, mut file) in sources.iter_mut() {
+        try!(hashes.hash(filename.clone(), &mut file));
+    }
 
     loop {
         match try!(delta.read_u8()) {

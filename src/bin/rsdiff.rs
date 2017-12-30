@@ -122,6 +122,8 @@ fn do_patch(references: Vec<String>, old_file: String,
     -> io::Result<()>
 {
     let references: Vec<&Path> = references.iter().map(|p| Path::new(p)).collect();
+    let delta = io::BufReader::new(try!(File::open(&delta_file)));
+    let new = io::BufWriter::new(try!(File::create(&new_file)));
     apply_diff(references.into_iter(), Path::new(&old_file),
-               Path::new(&delta_file), Path::new(&new_file))
+               delta, new)
 }
