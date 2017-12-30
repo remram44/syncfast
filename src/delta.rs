@@ -11,7 +11,7 @@ use sha1::Sha1;
 /// Write a delta file in "single-file mode" from an index and a single input.
 pub fn write_delta_file_single<I: Read + Seek, O: Write>(
         hashes: &HashMap<u32, HashSet<[u8; 20]>>, mut file: I,
-        delta: &mut O, blocksize: usize)
+        mut delta: O, blocksize: usize)
     -> io::Result<()>
 {
     try!(delta.write_all(b"RS-SYNCD"));
@@ -25,7 +25,7 @@ pub fn write_delta_file_single<I: Read + Seek, O: Write>(
 /// Write a delta file in "directory mode" from an index and a list of paths.
 pub fn write_delta_file_multiple<'a, P, I, O: Write>(
         hashes: &HashMap<u32, HashSet<[u8; 20]>>, files: I,
-        delta: &mut O, blocksize: usize)
+        mut delta: O, blocksize: usize)
     -> io::Result<()>
     where P: AsRef<Path>, I: Iterator<Item=P>
 {
@@ -39,7 +39,7 @@ pub fn write_delta_file_multiple<'a, P, I, O: Write>(
 
 /// Writes a single file entry to the delta file, from the index and file.
 fn write_delta<I: Read + Seek, O: Write>(
-        hashes: &HashMap<u32, HashSet<[u8; 20]>>, file: &mut I, delta: &mut O,
+        hashes: &HashMap<u32, HashSet<[u8; 20]>>, mut file: I, mut delta: O,
         blocksize: usize)
     -> io::Result<()>
 {
@@ -137,7 +137,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                         try!(delta.write_u8(0x01)); // LITERAL
                         try!(delta.write_u16::<BigEndian>((len - 1) as u16));
                         try!(file.seek(io::SeekFrom::Start(block_start)));
-                        try!(copy(file, delta,
+                        try!(copy(&mut file, &mut delta,
                                   CopyMode::Exact(len)));
                         try!(file.seek(io::SeekFrom::Start(pos)));
                     }
@@ -155,7 +155,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                         try!(delta.write_u8(0x01)); // LITERAL
                         try!(delta.write_u16::<BigEndian>(0xFFFF));
                         try!(file.seek(io::SeekFrom::Start(block_start)));
-                        try!(copy(file, delta, CopyMode::Exact(len)));
+                        try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
                         try!(file.seek(io::SeekFrom::Start(pos)));
                         break;
                     }
@@ -217,7 +217,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                         try!(delta.write_u8(0x01)); // LITERAL
                         try!(delta.write_u16::<BigEndian>((len - 1) as u16));
                         try!(file.seek(io::SeekFrom::Start(block_start)));
-                        try!(copy(file, delta, CopyMode::Exact(len)));
+                        try!(copy(&mut file, &mut delta, CopyMode::Exact(len)));
                         try!(file.seek(io::SeekFrom::Start(pos)));
                     }
                     break;

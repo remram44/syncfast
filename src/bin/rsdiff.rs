@@ -105,7 +105,7 @@ pub fn do_index(references: Vec<String>, old_file: String, index_file: String,
 pub fn do_delta(index_file: String, new_file: String, delta_file: String)
     -> io::Result<()>
 {
-    let mut delta = io::BufWriter::new(try!(File::create(&delta_file)));
+    let delta = io::BufWriter::new(try!(File::create(&delta_file)));
     let (hashes, blocksize) = {
         let index = try!(File::open(&index_file));
         info!("Reading index file {}...", index_file);
@@ -113,7 +113,7 @@ pub fn do_delta(index_file: String, new_file: String, delta_file: String)
     };
 
     let file = io::BufReader::new(try!(File::open(new_file)));
-    write_delta_file_single(&hashes, file, &mut delta, blocksize)
+    write_delta_file_single(&hashes, file, delta, blocksize)
 }
 
 /// 'patch' command: update the old file to get the new file.

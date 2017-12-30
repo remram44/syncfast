@@ -66,8 +66,7 @@ pub enum CopyMode {
     All,
 }
 
-pub fn copy<R: Read, W: Write>(reader: &mut R, writer: &mut W,
-                               what: CopyMode)
+pub fn copy<R: Read, W: Write>(mut reader: R, mut writer: W, what: CopyMode)
     -> io::Result<usize>
 {
     let mut buffer = [0u8; 4096];
