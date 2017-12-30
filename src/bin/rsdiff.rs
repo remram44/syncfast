@@ -22,7 +22,7 @@ Usage:
   rs-diff delta <index-file> <new-file> <delta-file>
   rs-diff patch [--ref=<ref>] <old-file> <delta-file> <new-file>
   rs-diff (-h | --help)
-  rs-diff --version 
+  rs-diff --version
 
 Options:
   -h --help             Show this screen.
