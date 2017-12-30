@@ -86,7 +86,7 @@ pub fn apply_diff_map<F: Read + Seek, R: Read, W: Write>(
                              source files change?"));
                     }
                     Some(loc) => {
-                        let mut origin = try!(File::open(&loc.file));
+                        let mut origin = sources.get_mut(&loc.file).expect("Got non-existing file from Hashes");
                         try!(origin.seek(io::SeekFrom::Start(loc.offset)));
                         let copied = try!(copy(&mut origin, &mut file,
                                                CopyMode::Maximum(blocksize)));
