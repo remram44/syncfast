@@ -4,7 +4,7 @@ use std::path::Path;
 
 use adler32::RollingAdler32;
 use byteorder::{WriteBytesExt, BigEndian};
-use log::LogLevel;
+use log::Level;
 use utils::{copy, CopyMode, ReadExt, to_hex};
 use sha1::Sha1;
 
@@ -79,9 +79,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                 assert!(buf_pos == 0);
                 hasher.update(&buffer[..read]);
             }
-            let mut digest = [0u8; 20];
-            hasher.output(&mut digest);
-            digest
+            hasher.digest().bytes()
         };
 
         // Now we advance while updating the Adler32 hash, until we find a
@@ -163,7 +161,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                 Match::Old => {
                     // Write the reference to the known block
                     let sha1 = sha1.as_ref().unwrap();
-                    if log_enabled!(LogLevel::Info) {
+                    if log_enabled!(Level::Info) {
                         info!("Writing known block, Adler32: {}, SHA-1: {}",
                               adler32.hash(), to_hex(sha1));
                     }
@@ -173,7 +171,7 @@ fn write_delta<I: Read + Seek, O: Write>(
                     break;
                 }
                 Match::New(offset) => {
-                    if log_enabled!(LogLevel::Info) {
+                    if log_enabled!(Level::Info) {
                         info!("Writing backref, offset: {}", offset);
                     }
                     try!(delta.write_u8(0x03)); // BACKREF

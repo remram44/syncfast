@@ -5,9 +5,9 @@ authors = ["Remi Rampin <remirampin@gmail.com>"]
 
 [dependencies]
 adler32 = "1.0"
-byteorder = "0.4"
+byteorder = "1.2"
 docopt = "0.6"
-env_logger = "0.3"
-log = "0.3"
+env_logger = "0.4"
+log = "0.4"
 rustc-serialize = "0.3"  # if you're using `derive(RustcDecodable)`
-sha1 = "0.1"
+sha1 = "0.4"

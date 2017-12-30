@@ -4,7 +4,7 @@ use std::io::{self, Read, Seek, Write};
 use std::iter::once;
 use std::path::{Path, PathBuf};
 
-use byteorder::{self, ReadBytesExt, BigEndian};
+use byteorder::{ReadBytesExt, BigEndian};
 use super::{Adler32_SHA1, DefaultHashes, adler32_sha1};
 use utils::{copy, CopyMode, ReadExt, to_hex};
 
@@ -66,14 +66,7 @@ pub fn apply_diff_map<F: Read + Seek, R: Read, W: Write>(
             }
             0x02 => { // KNOWN_BLOCK
                 info!("Known block");
-                let adler32 = match delta.read_u32::<BigEndian>() {
-                    Err(byteorder::Error::UnexpectedEOF) => {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                                  "Unexpected end of file"));
-                    }
-                    Err(byteorder::Error::Io(e)) => return Err(e),
-                    Ok(n) => n,
-                };
+                let adler32 = try!(delta.read_u32::<BigEndian>());
                 let sha1 = {
                     let mut buf = [0u8; 20];
                     if try!(delta.read_retry(&mut buf)) != 20 {

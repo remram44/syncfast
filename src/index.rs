@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
-use log::LogLevel;
+use log::Level;
 use super::{adler32_sha1, DefaultHashes};
 use utils::{ReadExt, to_hex};
 
@@ -71,7 +71,7 @@ pub fn read_index_file<R: Read>(index: R)
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                                       "Unexpected end of file"));
         }
-        if log_enabled!(LogLevel::Info) {
+        if log_enabled!(Level::Info) {
             info!("Read SHA-1: {}", to_hex(&sha1));
         }
 
