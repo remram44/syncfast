@@ -42,6 +42,7 @@ echo '$ patch' /group deltaPP broke
     set +e
     target/debug/rsdiff patch /etc/group /tmp/deltaPP /tmp/broke
     test 0 != $?
+    echo '(failed as expected)'
 )
 
 echo
