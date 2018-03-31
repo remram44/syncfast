@@ -1,4 +1,5 @@
 [![Build Status](https://travis-ci.org/remram44/rs-sync.svg?branch=master)](https://travis-ci.org/remram44/rs-sync/builds)
+[![Say Thanks!](https://img.shields.io/badge/Say%20Thanks-!-1EAEDB.svg)](https://saythanks.io/to/remram44)
 
 What is this?
 =============
