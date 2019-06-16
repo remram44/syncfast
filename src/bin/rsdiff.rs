@@ -2,7 +2,7 @@ extern crate docopt;
 extern crate env_logger;
 #[macro_use] extern crate log;
 extern crate rs_sync;
-extern crate rustc_serialize;
+extern crate serde;
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -13,6 +13,7 @@ use docopt::Docopt;
 use rs_sync::index::{hash_files, read_index_file, write_index_file};
 use rs_sync::delta::write_delta_file_single;
 use rs_sync::patch::apply_diff;
+use serde::Deserialize;
 
 static USAGE: &'static str = "
 rdiff clone.
@@ -29,7 +30,7 @@ Options:
   --blocksize=<bytes>   Blocksize in bytes [default: 4096]
 ";
 
-#[derive(RustcDecodable)]
+#[derive(Deserialize)]
 struct Args {
     cmd_index: bool,
     cmd_delta: bool,
@@ -58,10 +59,10 @@ struct Args {
 /// simply writing blocks from either the delta file, the old file or a
 /// previous occurrence in the new file.
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
 
     let args: Args = Docopt::new(USAGE)
-                            .and_then(|d| d.decode())
+                            .and_then(|d| d.deserialize())
                             .unwrap_or_else(|e| {
                                  e.exit()
                              });
@@ -80,7 +81,7 @@ fn main() {
     match result {
         Ok(()) => {},
         Err(e) => {
-            write!(io::stderr(), "Fatal error: {}\n", e).is_ok(); // Ignore error
+            let _ = write!(io::stderr(), "Fatal error: {}\n", e); // Ignore error
             process::exit(1);
         }
     }
