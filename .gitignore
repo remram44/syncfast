@@ -1,0 +1,18 @@
+# Rust
+target
+
+# Vi
+.*.swp
+
+# Emacs
+\#*#
+
+# OS files
+.DS_Store
+desktop.ini
+
+# Archives
+*.tar
+*.tar.gz
+*.tar.bz2
+*.zip

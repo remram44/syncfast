@@ -1,0 +1,10 @@
+[package]
+name = "rssync2"
+version = "0.1.0"
+authors = ["Remi Rampin <r@remirampin.com>"]
+edition = "2018"
+
+[dependencies]
+chrono = "0.4"
+log = "0.4"
+rusqlite = "0.16"
