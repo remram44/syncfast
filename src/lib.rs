@@ -3,6 +3,7 @@ extern crate chrono;
 #[macro_use] extern crate log;
 extern crate rusqlite;
 extern crate sha1;
+#[cfg(test)] extern crate tempfile;
 
 mod index;
 
@@ -56,5 +57,26 @@ impl ToSql for HashDigest {
         let string = String::from_utf8(buffer).unwrap();
 
         Ok(ToSqlOutput::from(string))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::types::{ToSql, ToSqlOutput, Value};
+    use sha1::Sha1;
+
+    use super::HashDigest;
+
+    #[test]
+    fn test_hash_tosql() {
+        let mut sha1 = Sha1::new();
+        sha1.update(b"test");
+        let digest = HashDigest(sha1.digest().bytes());
+        assert_eq!(
+            digest.to_sql().unwrap(),
+            ToSqlOutput::Owned(
+                Value::Text("a94a8fe5ccb19ba61c4c0873d391e987982fbbd3".into())
+            ),
+        );
     }
 }

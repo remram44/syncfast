@@ -264,3 +264,45 @@ impl<'a> IndexTransaction<'a> {
         self.tx.commit()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    use crate::HashDigest;
+    use super::Index;
+
+    #[test]
+    fn test() {
+        let mut file = NamedTempFile::new().expect("tempfile");
+        for i in 0..2000 {
+            write!(file, "Line {}\n", i + 1).expect("tempfile");
+        }
+        file.flush().expect("tempfile");
+        let mut index = Index::open_in_memory().expect("db");
+        {
+            let mut tx = index.transaction().expect("db");
+            tx.index_file(file.path()).expect("index");
+            tx.commit().expect("db");
+        }
+        assert!(
+            index.get_block(HashDigest(*b"12345678901234567890")).expect("get")
+                .is_none()
+        );
+        assert_eq!(
+            index.get_block(HashDigest(
+                *b"\xfb\x5e\xf7\xeb\xad\xd8\x2c\x80\x85\xc5\
+                   \xff\x63\x82\x36\x22\xba\xe0\xe2\x63\xf6"
+            )).expect("get"),
+            Some((file.path().into(), 0)),
+        );
+        assert_eq!(
+            index.get_block(HashDigest(
+                *b"\xa4\x32\x47\x91\xdc\xfc\x03\xdc\xea\xd1\
+                   \xd5\x76\x9c\xbc\x3a\x9a\x23\x5e\x25\x8f"
+            )).expect("get"),
+            Some((file.path().into(), 11579)),
+        );
+    }
+}

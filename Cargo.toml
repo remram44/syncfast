@@ -16,3 +16,6 @@ log = "0.4"
 env_logger = { version = "0.6", default-features = false, features = ["termcolor", "atty", "humantime"] }
 rusqlite = { version = "0.16", features = ["chrono"] }
 sha1 = "0.6"
+
+[dev-dependencies]
+tempfile = "~3.0"
