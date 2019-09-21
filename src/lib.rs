@@ -8,6 +8,7 @@ mod index;
 
 use rusqlite::types::{ToSql, ToSqlOutput};
 use std::fmt;
+use std::io::Write;
 
 pub use index::Index;
 
@@ -46,6 +47,14 @@ pub struct HashDigest([u8; 20]);
 
 impl ToSql for HashDigest {
     fn to_sql(&self) -> Result<ToSqlOutput, rusqlite::Error> {
-        unimplemented!()
+        // Write the hash to buffer on the stack, we know the size
+        let mut buffer = Vec::with_capacity(40);
+        for byte in &self.0 {
+            write!(&mut buffer, "{:02x}", byte).unwrap();
+        }
+        // Hexadecimal chars are ASCII, cast to string
+        let string = String::from_utf8(buffer).unwrap();
+
+        Ok(ToSqlOutput::from(string))
     }
 }
