@@ -37,18 +37,9 @@ impl From<std::io::Error> for Error {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct RollingHash(u32);
+pub struct HashDigest([u8; 20]);
 
-impl ToSql for RollingHash {
-    fn to_sql(&self) -> Result<ToSqlOutput, rusqlite::Error> {
-        unimplemented!()
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct SecureHash([u8; 20]);
-
-impl ToSql for SecureHash {
+impl ToSql for HashDigest {
     fn to_sql(&self) -> Result<ToSqlOutput, rusqlite::Error> {
         unimplemented!()
     }
@@ -69,13 +60,12 @@ const SCHEMA: &'static str = "
     CREATE INDEX idx_files_name ON files(name);
 
     CREATE TABLE blocks(
-        rolling_hash VARCHAR(8) NOT NULL,
-        secure_hash VARCHAR(40) NOT NULL,
+        hash VARCHAR(40) NOT NULL,
         file_id INTEGER NOT NULL,
         offset INTEGER NOT NULL,
         PRIMARY KEY(file_id, offset)
     );
-    CREATE INDEX idx_blocks_rolling_hash ON blocks(rolling_hash);
+    CREATE INDEX idx_blocks_hash ON blocks(hash);
     CREATE INDEX idx_blocks_file ON blocks(file_id);
     CREATE INDEX idx_blocks_file_offset ON blocks(file_id, offset);
 ";
@@ -156,26 +146,24 @@ impl Index {
 
     pub fn add_block(
         &mut self,
-        rolling_hash: RollingHash,
-        secure_hash: SecureHash,
+        hash: HashDigest,
         file_id: u32,
         offset: usize,
     ) -> Result<(), Error>
     {
         self.db.execute(
             "
-            INSERT INTO blocks(rolling_hash, secure_hash, file_id, offset)
-            VALUES(?, ?, ?, ?);
+            INSERT INTO blocks(hash, file_id, offset)
+            VALUES(?, ?, ?);
             ",
-            &[&rolling_hash as &dyn ToSql, &secure_hash, &file_id, &(offset as i64)],
+            &[&hash as &dyn ToSql, &file_id, &(offset as i64)],
         )?;
         Ok(())
     }
 
     pub fn get_block(
         &self,
-        rolling_hash: RollingHash,
-        secure_hash: SecureHash,
+        hash: HashDigest,
     ) -> Result<Option<(PathBuf, usize)>, Error>
     {
         let mut stmt = self.db.prepare(
@@ -183,13 +171,10 @@ impl Index {
             SELECT blocks.file_id, blocks.offset
             FROM blocks
             INNER JOIN files ON blocks.file_id = files.file_id
-            WHERE blocks.rolling_hash = ? AND blocks.secure_hash = ?;
+            WHERE blocks.hash = ?;
             ",
         )?;
-        let mut rows = stmt.query(&[
-            &rolling_hash as &dyn ToSql,
-            &secure_hash,
-        ])?;
+        let mut rows = stmt.query(&[&hash as &dyn ToSql])?;
         if let Some(row) = rows.next() {
             let row = row?;
             let path: String = row.get(0);
