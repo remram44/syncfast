@@ -159,25 +159,44 @@ impl<'a> IndexTransaction<'a> {
     /// Remove a file and all its blocks from the index
     pub fn remove_file(
         &mut self,
-        name: &Path,
+        file_id: u32,
     ) -> Result<(), Error>
     {
         self.tx.execute(
             "
-            DELETE FROM blocks WHERE file_id = (
-                SELECT file_id FROM files
-                WHERE name = ?
-            );
+            DELETE FROM blocks WHERE file_id = ?;
             ",
-            &[name.to_str().expect("encoding")],
+            &[&file_id],
         )?;
         self.tx.execute(
             "
-            DELETE FROM files WHERE name = ?;
+            DELETE FROM files WHERE file_id = ?;
             ",
-            &[name.to_str().expect("encoding")],
+            &[&file_id],
         )?;
         Ok(())
+    }
+
+    /// Get a list of all the files in the index
+    pub fn list_files(&self) -> Result<Vec<(u32, PathBuf)>, Error> {
+        let mut stmt = self.tx.prepare(
+            "
+            SELECT file_id, name FROM files;
+            ",
+        )?;
+        let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let path: String = row.get(1);
+                    results.push((row.get(0), path.into()))
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
     }
 
     /// Add a block to the index
