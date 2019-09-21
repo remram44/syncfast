@@ -10,7 +10,7 @@ use rusqlite::types::{ToSql, ToSqlOutput};
 use std::fmt;
 use std::io::Write;
 
-pub use index::Index;
+pub use index::{Index, IndexTransaction};
 
 #[derive(Debug)]
 pub enum Error {

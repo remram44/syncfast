@@ -1,6 +1,6 @@
 use cdchunking::{Chunker, ChunkInput, ZPAQ};
 use rusqlite;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use rusqlite::types::ToSql;
 use sha1::Sha1;
 use std::fs::File;
@@ -57,105 +57,6 @@ impl Index {
         Ok(Index { db })
     }
 
-    /// Add a file to the index
-    ///
-    /// This returns a tuple `(file_id, up_to_date)` where `file_id` can be
-    /// used to insert blocks, and `up_to_date` indicates whether the file's
-    /// modification date has changed and it should be re-indexed.
-    pub fn add_file(
-        &mut self,
-        name: &Path,
-        modified: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(u32, bool), Error>
-    {
-        let mut stmt = self.db.prepare(
-            "
-            SELECT file_id, modified FROM files
-            WHERE name = ?;
-            ",
-        )?;
-        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
-        if let Some(row) = rows.next() {
-            let row = row?;
-            let file_id: u32 = row.get(0);
-            let old_modified: chrono::DateTime<chrono::Utc> = row.get(1);
-            if old_modified != modified {
-                info!("Resetting file {:?}, modified", name);
-                // Delete blocks
-                self.db.execute(
-                    "
-                    DELETE FROM blocks WHERE file_id = ?;
-                    ",
-                    &[&file_id],
-                )?;
-                // Update modification time
-                self.db.execute(
-                    "
-                    UPDATE files SET modified = ? WHERE file_id = ?;
-                    ",
-                    &[&modified as &dyn ToSql, &file_id],
-                )?;
-                Ok((file_id, false))
-            } else {
-                debug!("File {:?} up to date", name);
-                Ok((file_id, true))
-            }
-        } else {
-            info!("Inserting new file {:?}", name);
-            self.db.execute(
-                "
-                INSERT INTO files(name, modified)
-                VALUES(?, ?);
-                ",
-                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
-            )?;
-            let file_id = self.db.last_insert_rowid();
-            Ok((file_id as u32, false))
-        }
-    }
-
-    /// Remove a file and all its blocks from the index
-    pub fn remove_file(
-        &mut self,
-        name: &Path,
-    ) -> Result<(), Error>
-    {
-        self.db.execute(
-            "
-            DELETE FROM blocks WHERE file_id = (
-                SELECT file_id FROM files
-                WHERE name = ?
-            );
-            ",
-            &[name.to_str().expect("encoding")],
-        )?;
-        self.db.execute(
-            "
-            DELETE FROM files WHERE name = ?;
-            ",
-            &[name.to_str().expect("encoding")],
-        )?;
-        Ok(())
-    }
-
-    /// Add a block to the index
-    pub fn add_block(
-        &mut self,
-        hash: HashDigest,
-        file_id: u32,
-        offset: usize,
-    ) -> Result<(), Error>
-    {
-        self.db.execute(
-            "
-            INSERT INTO blocks(hash, file_id, offset)
-            VALUES(?, ?, ?);
-            ",
-            &[&hash as &dyn ToSql, &file_id, &(offset as i64)],
-        )?;
-        Ok(())
-    }
-
     /// Try to find a block in the indexed files
     pub fn get_block(
         &self,
@@ -181,6 +82,120 @@ impl Index {
         } else {
             Ok(None)
         }
+    }
+
+    /// Start a transaction to update the index
+    pub fn transaction<'a>(
+        &'a mut self
+    ) -> Result<IndexTransaction<'a>, rusqlite::Error>
+    {
+        let tx = self.db.transaction()?;
+        Ok(IndexTransaction { tx })
+    }
+}
+
+pub struct IndexTransaction<'a> {
+    tx: Transaction<'a>,
+}
+
+impl<'a> IndexTransaction<'a> {
+    /// Add a file to the index
+    ///
+    /// This returns a tuple `(file_id, up_to_date)` where `file_id` can be
+    /// used to insert blocks, and `up_to_date` indicates whether the file's
+    /// modification date has changed and it should be re-indexed.
+    pub fn add_file(
+        &mut self,
+        name: &Path,
+        modified: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(u32, bool), Error>
+    {
+        let mut stmt = self.tx.prepare(
+            "
+            SELECT file_id, modified FROM files
+            WHERE name = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
+        if let Some(row) = rows.next() {
+            let row = row?;
+            let file_id: u32 = row.get(0);
+            let old_modified: chrono::DateTime<chrono::Utc> = row.get(1);
+            if old_modified != modified {
+                info!("Resetting file {:?}, modified", name);
+                // Delete blocks
+                self.tx.execute(
+                    "
+                    DELETE FROM blocks WHERE file_id = ?;
+                    ",
+                    &[&file_id],
+                )?;
+                // Update modification time
+                self.tx.execute(
+                    "
+                    UPDATE files SET modified = ? WHERE file_id = ?;
+                    ",
+                    &[&modified as &dyn ToSql, &file_id],
+                )?;
+                Ok((file_id, false))
+            } else {
+                debug!("File {:?} up to date", name);
+                Ok((file_id, true))
+            }
+        } else {
+            info!("Inserting new file {:?}", name);
+            self.tx.execute(
+                "
+                INSERT INTO files(name, modified)
+                VALUES(?, ?);
+                ",
+                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
+            )?;
+            let file_id = self.tx.last_insert_rowid();
+            Ok((file_id as u32, false))
+        }
+    }
+
+    /// Remove a file and all its blocks from the index
+    pub fn remove_file(
+        &mut self,
+        name: &Path,
+    ) -> Result<(), Error>
+    {
+        self.tx.execute(
+            "
+            DELETE FROM blocks WHERE file_id = (
+                SELECT file_id FROM files
+                WHERE name = ?
+            );
+            ",
+            &[name.to_str().expect("encoding")],
+        )?;
+        self.tx.execute(
+            "
+            DELETE FROM files WHERE name = ?;
+            ",
+            &[name.to_str().expect("encoding")],
+        )?;
+        Ok(())
+    }
+
+    /// Add a block to the index
+    pub fn add_block(
+        &mut self,
+        hash: HashDigest,
+        file_id: u32,
+        offset: usize,
+    ) -> Result<(), Error>
+    {
+        self.tx.execute(
+            "
+            INSERT INTO blocks(hash, file_id, offset)
+            VALUES(?, ?, ?);
+            ",
+            &[&hash as &dyn ToSql, &file_id, &(offset as i64)],
+        )?;
+        Ok(())
     }
 
     /// Cut up a file into blocks and add them to the index
@@ -223,5 +238,10 @@ impl Index {
             }
         }
         Ok(())
+    }
+
+    /// Commit the transaction
+    pub fn commit(self) -> Result<(), rusqlite::Error> {
+        self.tx.commit()
     }
 }

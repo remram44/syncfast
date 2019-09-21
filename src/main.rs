@@ -7,7 +7,7 @@ use clap::{App, Arg, SubCommand};
 use std::env;
 use std::path::Path;
 
-use rssync2::{Error, Index};
+use rssync2::{Error, Index, IndexTransaction};
 
 /// Command-line entrypoint
 fn main() {
@@ -75,9 +75,10 @@ fn main() {
             let path = Path::new(s_matches.value_of_os("path").unwrap());
 
             let mut index = Index::open(index_filename.into())?;
-
-            index_path(&mut index, path)?;
-            remove_missing_files(&mut index, path)?;
+            let mut index_tx = index.transaction()?;
+            index_path(&mut index_tx, path)?;
+            remove_missing_files(&mut index_tx, path)?;
+            index_tx.commit()?;
 
             Ok(())
         }(),
@@ -94,7 +95,11 @@ fn main() {
 }
 
 /// Recursively descends in directories and add all files to the index
-fn index_path(index: &mut Index, path: &Path) -> Result<(), Error> {
+fn index_path<'a>(
+    index: &mut IndexTransaction<'a>,
+    path: &Path,
+) -> Result<(), Error>
+{
     if path.is_dir() {
         info!("Indexing directory {:?}", path);
         for entry in path.read_dir()? {
@@ -115,7 +120,11 @@ fn index_path(index: &mut Index, path: &Path) -> Result<(), Error> {
 }
 
 /// List all files and remove those that don't exist on disk
-fn remove_missing_files(index: &mut Index, path: &Path) -> Result<(), Error> {
+fn remove_missing_files<'a>(
+    index: &mut IndexTransaction<'a>,
+    path: &Path,
+) -> Result<(), Error>
+{
     // TODO
     Ok(())
 }
