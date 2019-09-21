@@ -13,6 +13,47 @@ Current status
 
 I am still implementing core functionality. This is NOT ready for production use.
 
+How to use
+==========
+
+Common options: `-X` indicates the location of the index file on the source side, and `-x` the index file on the destination side.
+
+rsync
+-----
+
+```
+$ rssync sync some/folder othermachine:folder
+```
+
+Pre-computed indices are optional but make the operation faster:
+
+```
+$ rssync index -x folder.idx some/folder
+$ ssh othermachine \
+  rssync index -x folder.idx folder
+$ rssync sync -X folder.idx -x othermachine:folder.idx some/folder othermachine:folder
+```
+
+rdiff
+-----
+
+```
+# Same as rdiff (signature/delta/patch)
+$ rssync index -x signature.idx old/folder
+$ rssync diff -o patch.bin -x signature.idx new/folder
+$ rssync patch old/folder patch.bin
+```
+
+zsync
+-----
+
+```
+$ rssync index -x data.tar.rssync.idx data.tar
+$ rssync sync -X data.tar.rssync.idx old/data.tar
+# Or over network
+$ rssync sync -X http://example.org/data.tar.rssync.idx old/data.tar
+```
+
 Notes
 =====
 
