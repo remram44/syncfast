@@ -2,6 +2,7 @@
 name = "rssync2"
 version = "0.1.0"
 authors = ["Remi Rampin <r@remirampin.com>"]
+license = "BSD-3-Clause"
 
 [[bin]]
 name = "rssync"
