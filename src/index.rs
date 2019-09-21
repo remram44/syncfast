@@ -65,7 +65,7 @@ impl Index {
     {
         let mut stmt = self.db.prepare(
             "
-            SELECT blocks.file_id, blocks.offset
+            SELECT files.name, blocks.offset
             FROM blocks
             INNER JOIN files ON blocks.file_id = files.file_id
             WHERE blocks.hash = ?;
