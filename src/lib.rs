@@ -36,6 +36,7 @@ impl From<std::io::Error> for Error {
     }
 }
 
+/// Type for the hashes
 #[derive(Debug, PartialEq, Eq)]
 pub struct HashDigest([u8; 20]);
 
@@ -70,11 +71,13 @@ const SCHEMA: &'static str = "
     CREATE INDEX idx_blocks_file_offset ON blocks(file_id, offset);
 ";
 
+/// Index of files and blocks
 pub struct Index {
     db: Connection,
 }
 
 impl Index {
+    /// Open an index from a file
     pub fn open(filename: &Path) -> Result<Index, Error> {
         let exists = filename.exists();
         let db = Connection::open(filename)?;
@@ -85,6 +88,11 @@ impl Index {
         Ok(Index { db })
     }
 
+    /// Add a file to the index
+    ///
+    /// This returns a tuple `(file_id, up_to_date)` where `file_id` can be
+    /// used to insert blocks, and `up_to_date` indicates whether the file's
+    /// modification date has changed and it should be re-indexed.
     pub fn add_file(
         &mut self,
         name: &Path,
@@ -121,6 +129,7 @@ impl Index {
         }
     }
 
+    /// Remove a file and all its blocks from the index
     pub fn remove_file(
         &mut self,
         name: &Path,
@@ -144,6 +153,7 @@ impl Index {
         Ok(())
     }
 
+    /// Add a block to the index
     pub fn add_block(
         &mut self,
         hash: HashDigest,
@@ -161,6 +171,7 @@ impl Index {
         Ok(())
     }
 
+    /// Try to find a block in the indexed files
     pub fn get_block(
         &self,
         hash: HashDigest,
