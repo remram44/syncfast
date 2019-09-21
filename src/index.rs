@@ -98,6 +98,9 @@ pub struct IndexTransaction<'a> {
     tx: Transaction<'a>,
 }
 
+const ZPAQ_BITS: usize = 13; // 13 bits = 8 KiB block average
+const MAX_BLOCK_SIZE: usize = 1 << 15; // 32 KiB
+
 impl<'a> IndexTransaction<'a> {
     /// Add a file to the index
     ///
@@ -231,7 +234,7 @@ impl<'a> IndexTransaction<'a> {
         if !up_to_date {
             // Use ZPAQ to cut the stream into blocks
             let chunker = Chunker::new(
-                ZPAQ::new(13) // 13 bits = 8 KiB block average
+                ZPAQ::new(ZPAQ_BITS) // 13 bits = 8 KiB block average
             );
             let mut chunk_iterator = chunker.stream(file);
             let mut start_offset = 0;
@@ -239,7 +242,24 @@ impl<'a> IndexTransaction<'a> {
             let mut sha1 = Sha1::new();
             while let Some(chunk) = chunk_iterator.read() {
                 match chunk? {
-                    ChunkInput::Data(d) => {
+                    ChunkInput::Data(mut d) => {
+                        while offset - start_offset + d.len()
+                            >= MAX_BLOCK_SIZE
+                        {
+                            let end = MAX_BLOCK_SIZE
+                                + start_offset - offset;
+                            sha1.update(&d[0..end]);
+                            let digest = HashDigest(sha1.digest().bytes());
+                            debug!(
+                                "Max block size reached, adding block, \
+                                 offset={}, size={}, sha1={}",
+                                start_offset, offset + end - start_offset, sha1.digest(),
+                            );
+                            self.add_block(digest, file_id, start_offset)?;
+                            offset += end;
+                            start_offset = offset;
+                            d = &d[end..];
+                        }
                         sha1.update(d);
                         offset += d.len();
                     }
@@ -271,13 +291,16 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use crate::HashDigest;
-    use super::Index;
+    use super::{Index, MAX_BLOCK_SIZE};
 
     #[test]
     fn test() {
         let mut file = NamedTempFile::new().expect("tempfile");
         for i in 0..2000 {
             write!(file, "Line {}\n", i + 1).expect("tempfile");
+        }
+        for _ in 0..2000 {
+            write!(file, "Test content\n").expect("tempfile");
         }
         file.flush().expect("tempfile");
         let mut index = Index::open_in_memory().expect("db");
@@ -290,19 +313,30 @@ mod tests {
             index.get_block(HashDigest(*b"12345678901234567890")).expect("get")
                 .is_none()
         );
+        let block1 = index.get_block(HashDigest(
+            *b"\xfb\x5e\xf7\xeb\xad\xd8\x2c\x80\x85\xc5\
+               \xff\x63\x82\x36\x22\xba\xe0\xe2\x63\xf6"
+        )).expect("get");
         assert_eq!(
-            index.get_block(HashDigest(
-                *b"\xfb\x5e\xf7\xeb\xad\xd8\x2c\x80\x85\xc5\
-                   \xff\x63\x82\x36\x22\xba\xe0\xe2\x63\xf6"
-            )).expect("get"),
+            block1,
             Some((file.path().into(), 0)),
         );
+        let block2 = index.get_block(HashDigest(
+            *b"\x57\x0d\x8b\x30\xfc\xfd\x58\x5e\x41\x27\
+               \xb5\x61\xf5\xec\xd3\x76\xff\x4d\x01\x01"
+        )).expect("get");
         assert_eq!(
-            index.get_block(HashDigest(
-                *b"\xa4\x32\x47\x91\xdc\xfc\x03\xdc\xea\xd1\
-                   \xd5\x76\x9c\xbc\x3a\x9a\x23\x5e\x25\x8f"
-            )).expect("get"),
+            block2,
             Some((file.path().into(), 11579)),
         );
+        let block3 = index.get_block(HashDigest(
+            *b"\xa6\xe1\x6d\x65\x26\xbd\x1d\x94\xec\x47\
+               \xd2\xeb\x3f\xa4\x6f\x34\xb9\x71\x70\xa7"
+        )).expect("get");
+        assert_eq!(
+            block3,
+            Some((file.path().into(), 44347)),
+        );
+        assert_eq!(block3.unwrap().1 - block2.unwrap().1, MAX_BLOCK_SIZE);
     }
 }
