@@ -4,7 +4,13 @@ version = "0.1.0"
 authors = ["Remi Rampin <r@remirampin.com>"]
 edition = "2018"
 
+[[bin]]
+name = "rssync"
+path = "src/main.rs"
+
 [dependencies]
 chrono = "0.4"
+clap = "2"
 log = "0.4"
+env_logger = "0.6"
 rusqlite = "0.16"

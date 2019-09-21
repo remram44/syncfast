@@ -5,6 +5,7 @@ extern crate rusqlite;
 use rusqlite::Connection;
 use rusqlite::types::{ToSql, ToSqlOutput};
 use std::fmt;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -88,6 +89,13 @@ impl Index {
         Ok(Index { db })
     }
 
+    /// Open an in-memory index
+    pub fn open_in_memory() -> Result<Index, Error> {
+        let db = Connection::open_in_memory()?;
+        db.execute_batch(SCHEMA)?;
+        Ok(Index { db })
+    }
+
     /// Add a file to the index
     ///
     /// This returns a tuple `(file_id, up_to_date)` where `file_id` can be
@@ -96,27 +104,44 @@ impl Index {
     pub fn add_file(
         &mut self,
         name: &Path,
-        modified: chrono::NaiveDateTime,
-    ) -> Result<u32, Error>
+        modified: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(u32, bool), Error>
     {
         let modified = modified.format("%Y-%m-%d %H:%M:%S").to_string();
         let mut stmt = self.db.prepare(
             "
-            SELECT file_id FROM files
+            SELECT file_id, modified FROM files
             WHERE name = ?;
             ",
         )?;
         let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
         if let Some(row) = rows.next() {
-            let file_id: u32 = row?.get(0);
-            self.db.execute(
-                "
-                UPDATE files SET modified = ? WHERE file_id = ?;
-                ",
-                &[&file_id as &dyn ToSql, &modified],
-            )?;
-            Ok(file_id)
+            let row = row?;
+            let file_id: u32 = row.get(0);
+            let old_modified: String = row.get(1);
+            if old_modified != modified {
+                info!("Resetting file {:?}, modified", name);
+                // Delete blocks
+                self.db.execute(
+                    "
+                    DELETE FROM blocks WHERE file_id = ?;
+                    ",
+                    &[&file_id],
+                )?;
+                // Update modification time
+                self.db.execute(
+                    "
+                    UPDATE files SET modified = ? WHERE file_id = ?;
+                    ",
+                    &[&modified as &dyn ToSql, &file_id],
+                )?;
+                Ok((file_id, false))
+            } else {
+                debug!("File {:?} up to date", name);
+                Ok((file_id, true))
+            }
         } else {
+            info!("Inserting new file {:?}", name);
             self.db.execute(
                 "
                 INSERT INTO files(name, modified)
@@ -125,7 +150,7 @@ impl Index {
                 &[name.to_str().expect("encoding"), &modified],
             )?;
             let file_id = self.db.last_insert_rowid();
-            Ok(file_id as u32)
+            Ok((file_id as u32, false))
         }
     }
 
@@ -196,5 +221,22 @@ impl Index {
         } else {
             Ok(None)
         }
+    }
+
+    /// Cut up a file into blocks and add them to the index
+    pub fn index_file(
+        &mut self,
+        name: &Path,
+    ) -> Result<(), Error>
+    {
+        let file = File::open(name)?;
+        let (file_id, up_to_date) = self.add_file(
+            name,
+            file.metadata()?.modified()?.into(),
+        )?;
+        if !up_to_date {
+            // TODO: Index file's blocks
+        }
+        Ok(())
     }
 }
