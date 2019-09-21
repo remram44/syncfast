@@ -1,6 +1,8 @@
+extern crate cdchunking;
 extern crate chrono;
 #[macro_use] extern crate log;
 extern crate rusqlite;
+extern crate sha1;
 
 mod index;
 

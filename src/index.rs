@@ -1,6 +1,8 @@
+use cdchunking::{Chunker, ChunkInput, ZPAQ};
 use rusqlite;
 use rusqlite::Connection;
 use rusqlite::types::ToSql;
+use sha1::Sha1;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -194,7 +196,32 @@ impl Index {
             file.metadata()?.modified()?.into(),
         )?;
         if !up_to_date {
-            // TODO: Index file's blocks
+            // Use ZPAQ to cut the stream into blocks
+            let chunker = Chunker::new(
+                ZPAQ::new(13) // 13 bits = 8 KiB block average
+            );
+            let mut chunk_iterator = chunker.stream(file);
+            let mut start_offset = 0;
+            let mut offset = 0;
+            let mut sha1 = Sha1::new();
+            while let Some(chunk) = chunk_iterator.read() {
+                match chunk? {
+                    ChunkInput::Data(d) => {
+                        sha1.update(d);
+                        offset += d.len();
+                    }
+                    ChunkInput::End => {
+                        let digest = HashDigest(sha1.digest().bytes());
+                        debug!(
+                            "Adding block, offset={}, size={}, sha1={}",
+                            start_offset, offset - start_offset, sha1.digest(),
+                        );
+                        self.add_block(digest, file_id, start_offset)?;
+                        start_offset = offset;
+                        sha1.reset();
+                    }
+                }
+            }
         }
         Ok(())
     }
