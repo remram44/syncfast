@@ -1,0 +1,24 @@
+[![Build Status](https://travis-ci.org/remram44/rs-sync.svg?branch=master)](https://travis-ci.org/remram44/rs-sync/builds)
+[![Say Thanks!](https://img.shields.io/badge/Say%20Thanks-!-1EAEDB.svg)](https://saythanks.io/to/remram44)
+
+What is this?
+=============
+
+This is an rsync-clone written in the [Rust](https://www.rust-lang.org/) programming language. It is intended to provide the functionality provided by rsync, rdiff, and zsync in one single program, as well as some additions such as caching file signatures to make repeated synchronizations faster. It will also provide a library, allowing to use the functionality in your own programs.
+
+[Generated documentation](https://remram44.github.io/rs-sync/rssync2/index.html)
+
+Current status
+==============
+
+I am still implementing core functionality. This is NOT ready for production use.
+
+Notes
+=====
+
+The rsync algorithm: https://rsync.samba.org/tech_report/
+How rsync works: https://rsync.samba.org/how-rsync-works.html
+
+zsync: http://zsync.moria.org.uk/
+
+Compression crate: https://crates.io/crates/flate2
