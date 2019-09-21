@@ -14,5 +14,5 @@ chrono = "0.4"
 clap = "2"
 log = "0.4"
 env_logger = "0.6"
-rusqlite = "0.16"
+rusqlite = { version = "0.16", features = ["chrono"] }
 sha1 = "0.6"

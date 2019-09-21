@@ -68,7 +68,6 @@ impl Index {
         modified: chrono::DateTime<chrono::Utc>,
     ) -> Result<(u32, bool), Error>
     {
-        let modified = modified.format("%Y-%m-%d %H:%M:%S").to_string();
         let mut stmt = self.db.prepare(
             "
             SELECT file_id, modified FROM files
@@ -79,7 +78,7 @@ impl Index {
         if let Some(row) = rows.next() {
             let row = row?;
             let file_id: u32 = row.get(0);
-            let old_modified: String = row.get(1);
+            let old_modified: chrono::DateTime<chrono::Utc> = row.get(1);
             if old_modified != modified {
                 info!("Resetting file {:?}, modified", name);
                 // Delete blocks
@@ -108,7 +107,7 @@ impl Index {
                 INSERT INTO files(name, modified)
                 VALUES(?, ?);
                 ",
-                &[name.to_str().expect("encoding"), &modified],
+                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
             )?;
             let file_id = self.db.last_insert_rowid();
             Ok((file_id as u32, false))
