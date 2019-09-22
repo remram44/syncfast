@@ -260,6 +260,7 @@ impl<'a> IndexTransaction<'a> {
                             offset += end;
                             start_offset = offset;
                             d = &d[end..];
+                            sha1.reset();
                         }
                         sha1.update(d);
                         offset += d.len();
@@ -331,8 +332,8 @@ mod tests {
             Some((file.path().into(), 11579)),
         );
         let block3 = index.get_block(HashDigest(
-            *b"\xa6\xe1\x6d\x65\x26\xbd\x1d\x94\xec\x47\
-               \xd2\xeb\x3f\xa4\x6f\x34\xb9\x71\x70\xa7"
+            *b"\xb9\xa8\xc2\x64\x1a\xf2\xcf\x8f\xd8\xf3\
+               \x6a\x24\x56\xa3\xea\xa9\x5c\x02\x91\x27"
         )).expect("get");
         assert_eq!(
             block3,
