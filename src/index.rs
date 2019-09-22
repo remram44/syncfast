@@ -251,7 +251,7 @@ impl<'a> IndexTransaction<'a> {
                         let digest = HashDigest(sha1.digest().bytes());
                         debug!(
                             "Adding block, offset={}, size={}, sha1={}",
-                            start_offset, offset - start_offset, sha1.digest(),
+                            start_offset, offset - start_offset, digest,
                         );
                         self.add_block(&digest, file_id, start_offset)?;
                         start_offset = offset;

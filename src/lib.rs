@@ -70,6 +70,15 @@ impl ToSql for HashDigest {
     }
 }
 
+impl fmt::Display for HashDigest {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::types::{ToSql, ToSqlOutput, Value};
