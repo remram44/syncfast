@@ -236,32 +236,14 @@ impl<'a> IndexTransaction<'a> {
             // Use ZPAQ to cut the stream into blocks
             let chunker = Chunker::new(
                 ZPAQ::new(ZPAQ_BITS) // 13 bits = 8 KiB block average
-            );
+            ).max_size(MAX_BLOCK_SIZE);
             let mut chunk_iterator = chunker.stream(file);
             let mut start_offset = 0;
             let mut offset = 0;
             let mut sha1 = Sha1::new();
             while let Some(chunk) = chunk_iterator.read() {
                 match chunk? {
-                    ChunkInput::Data(mut d) => {
-                        while offset - start_offset + d.len()
-                            >= MAX_BLOCK_SIZE
-                        {
-                            let end = MAX_BLOCK_SIZE
-                                + start_offset - offset;
-                            sha1.update(&d[0..end]);
-                            let digest = HashDigest(sha1.digest().bytes());
-                            debug!(
-                                "Max block size reached, adding block, \
-                                 offset={}, size={}, sha1={}",
-                                start_offset, offset + end - start_offset, sha1.digest(),
-                            );
-                            self.add_block(digest, file_id, start_offset)?;
-                            offset += end;
-                            start_offset = offset;
-                            d = &d[end..];
-                            sha1.reset();
-                        }
+                    ChunkInput::Data(d) => {
                         sha1.update(d);
                         offset += d.len();
                     }
