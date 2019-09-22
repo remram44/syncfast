@@ -1,13 +1,13 @@
 extern crate clap;
 #[macro_use] extern crate log;
 extern crate env_logger;
-extern crate rssync2;
+extern crate rssync;
 
 use clap::{App, Arg, SubCommand};
 use std::env;
 use std::path::Path;
 
-use rssync2::{Error, Index, IndexTransaction};
+use rssync::{Error, Index, IndexTransaction};
 
 /// Command-line entrypoint
 fn main() {
