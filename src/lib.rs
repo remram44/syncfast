@@ -13,6 +13,7 @@ use std::io::Write;
 
 pub use index::{Index, IndexTransaction};
 
+/// General error type for this library
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),

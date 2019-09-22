@@ -94,6 +94,7 @@ impl Index {
     }
 }
 
+/// A transaction on the index, for safety and performance
 pub struct IndexTransaction<'a> {
     tx: Transaction<'a>,
 }
