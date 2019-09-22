@@ -33,6 +33,32 @@ const SCHEMA: &'static str = "
     CREATE INDEX idx_blocks_file_offset ON blocks(file_id, offset);
 ";
 
+fn get_block(
+    db: &Connection,
+    hash: &HashDigest,
+) -> Result<Option<(PathBuf, usize)>, Error>
+{
+    let mut stmt = db.prepare(
+        "
+        SELECT files.name, blocks.offset
+        FROM blocks
+        INNER JOIN files ON blocks.file_id = files.file_id
+        WHERE blocks.hash = ?;
+        ",
+    )?;
+    let mut rows = stmt.query(&[hash as &dyn ToSql])?;
+    if let Some(row) = rows.next() {
+        let row = row?;
+        let path: String = row.get(0);
+        let path: PathBuf = path.into();
+        let offset: i64 = row.get(1);
+        let offset = offset as usize;
+        Ok(Some((path, offset)))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Index of files and blocks
 pub struct Index {
     db: Connection,
@@ -63,25 +89,7 @@ impl Index {
         hash: &HashDigest,
     ) -> Result<Option<(PathBuf, usize)>, Error>
     {
-        let mut stmt = self.db.prepare(
-            "
-            SELECT files.name, blocks.offset
-            FROM blocks
-            INNER JOIN files ON blocks.file_id = files.file_id
-            WHERE blocks.hash = ?;
-            ",
-        )?;
-        let mut rows = stmt.query(&[&hash as &dyn ToSql])?;
-        if let Some(row) = rows.next() {
-            let row = row?;
-            let path: String = row.get(0);
-            let path: PathBuf = path.into();
-            let offset: i64 = row.get(1);
-            let offset = offset as usize;
-            Ok(Some((path, offset)))
-        } else {
-            Ok(None)
-        }
+        get_block(&self.db, hash)
     }
 
     /// Start a transaction to update the index
@@ -219,6 +227,15 @@ impl<'a> IndexTransaction<'a> {
             &[&hash as &dyn ToSql, &file_id, &(offset as i64)],
         )?;
         Ok(())
+    }
+
+    /// Try to find a block in the indexed files
+    pub fn get_block(
+        &self,
+        hash: &HashDigest,
+    ) -> Result<Option<(PathBuf, usize)>, Error>
+    {
+        get_block(&self.tx, hash)
     }
 
     /// Cut up a file into blocks and add them to the index
