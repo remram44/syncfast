@@ -1,3 +1,12 @@
+//! Rsync-like library/program.
+//!
+//! Rs-sync is intended to provide the functionality of rsync ("live" transfer
+//! of files/directories over SSH), rdiff (creation of binary patches between
+//! files, for later application), and zsync (efficient synchronization of
+//! files or file trees from a central "dumb" HTTP server). It also has some
+//! additions such as caching file signatures to make repeated synchronizations
+//! faster.
+
 extern crate cdchunking;
 extern crate chrono;
 #[macro_use] extern crate log;
