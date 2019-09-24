@@ -60,7 +60,7 @@ impl Index {
     /// Try to find a block in the indexed files
     pub fn get_block(
         &self,
-        hash: HashDigest,
+        hash: &HashDigest,
     ) -> Result<Option<(PathBuf, usize)>, Error>
     {
         let mut stmt = self.db.prepare(
@@ -206,7 +206,7 @@ impl<'a> IndexTransaction<'a> {
     /// Add a block to the index
     pub fn add_block(
         &mut self,
-        hash: HashDigest,
+        hash: &HashDigest,
         file_id: u32,
         offset: usize,
     ) -> Result<(), Error>
@@ -253,7 +253,7 @@ impl<'a> IndexTransaction<'a> {
                             "Adding block, offset={}, size={}, sha1={}",
                             start_offset, offset - start_offset, sha1.digest(),
                         );
-                        self.add_block(digest, file_id, start_offset)?;
+                        self.add_block(&digest, file_id, start_offset)?;
                         start_offset = offset;
                         sha1.reset();
                     }
@@ -294,10 +294,11 @@ mod tests {
             tx.commit().expect("db");
         }
         assert!(
-            index.get_block(HashDigest(*b"12345678901234567890")).expect("get")
+            index.get_block(&HashDigest(*b"12345678901234567890"))
+                .expect("get")
                 .is_none()
         );
-        let block1 = index.get_block(HashDigest(
+        let block1 = index.get_block(&HashDigest(
             *b"\xfb\x5e\xf7\xeb\xad\xd8\x2c\x80\x85\xc5\
                \xff\x63\x82\x36\x22\xba\xe0\xe2\x63\xf6"
         )).expect("get");
@@ -305,7 +306,7 @@ mod tests {
             block1,
             Some((file.path().into(), 0)),
         );
-        let block2 = index.get_block(HashDigest(
+        let block2 = index.get_block(&HashDigest(
             *b"\x57\x0d\x8b\x30\xfc\xfd\x58\x5e\x41\x27\
                \xb5\x61\xf5\xec\xd3\x76\xff\x4d\x01\x01"
         )).expect("get");
@@ -313,7 +314,7 @@ mod tests {
             block2,
             Some((file.path().into(), 11579)),
         );
-        let block3 = index.get_block(HashDigest(
+        let block3 = index.get_block(&HashDigest(
             *b"\xb9\xa8\xc2\x64\x1a\xf2\xcf\x8f\xd8\xf3\
                \x6a\x24\x56\xa3\xea\xa9\x5c\x02\x91\x27"
         )).expect("get");
