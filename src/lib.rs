@@ -14,6 +14,7 @@ extern crate rusqlite;
 extern crate sha1;
 #[cfg(test)] extern crate tempfile;
 
+pub mod locations;
 mod index;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
