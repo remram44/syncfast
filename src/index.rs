@@ -13,7 +13,7 @@ const SCHEMA: &'static str = "
         name VARCHAR(8) NOT NULL,
         version VARCHAR(16) NOT NULL
     );
-    INSERT INTO version(name, version) VALUES('rs-sync', '0.1');
+    INSERT INTO version(name, version) VALUES('rrsync', '0.1');
 
     CREATE TABLE files(
         file_id INTEGER NOT NULL PRIMARY KEY,
