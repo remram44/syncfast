@@ -26,6 +26,7 @@ const SCHEMA: &'static str = "
         hash VARCHAR(40) NOT NULL,
         file_id INTEGER NOT NULL,
         offset INTEGER NOT NULL,
+        size INTEGER NOT NULL,
         PRIMARY KEY(file_id, offset)
     );
     CREATE INDEX idx_blocks_hash ON blocks(hash);
@@ -36,11 +37,11 @@ const SCHEMA: &'static str = "
 fn get_block(
     db: &Connection,
     hash: &HashDigest,
-) -> Result<Option<(PathBuf, usize)>, Error>
+) -> Result<Option<(PathBuf, usize, usize)>, Error>
 {
     let mut stmt = db.prepare(
         "
-        SELECT files.name, blocks.offset
+        SELECT files.name, blocks.offset, blocks.size
         FROM blocks
         INNER JOIN files ON blocks.file_id = files.file_id
         WHERE blocks.hash = ?;
@@ -53,7 +54,9 @@ fn get_block(
         let path: PathBuf = path.into();
         let offset: i64 = row.get(1);
         let offset = offset as usize;
-        Ok(Some((path, offset)))
+        let size: i64 = row.get(2);
+        let size = size as usize;
+        Ok(Some((path, offset, size)))
     } else {
         Ok(None)
     }
@@ -87,7 +90,7 @@ impl Index {
     pub fn get_block(
         &self,
         hash: &HashDigest,
-    ) -> Result<Option<(PathBuf, usize)>, Error>
+    ) -> Result<Option<(PathBuf, usize, usize)>, Error>
     {
         get_block(&self.db, hash)
     }
@@ -217,23 +220,48 @@ impl<'a> IndexTransaction<'a> {
         hash: &HashDigest,
         file_id: u32,
         offset: usize,
+        size: usize,
     ) -> Result<(), Error>
     {
         self.tx.execute(
             "
-            INSERT INTO blocks(hash, file_id, offset)
-            VALUES(?, ?, ?);
+            INSERT INTO blocks(hash, file_id, offset, size)
+            VALUES(?, ?, ?, ?);
             ",
-            &[&hash as &dyn ToSql, &file_id, &(offset as i64)],
+            &[&hash as &dyn ToSql, &file_id, &(offset as i64), &(size as i64)],
         )?;
         Ok(())
+    }
+
+    /// Get a list of all the blocks in a specific file
+    pub fn list_file_blocks(&self, file_id: u32) -> Result<Vec<(HashDigest, usize, usize)>, Error> {
+        let mut stmt = self.tx.prepare(
+            "
+            SELECT hash, offset, size FROM blocks
+            WHERE file_id = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[file_id])?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let offset: i64 = row.get(1);
+                    let size: i64 = row.get(2);
+                    results.push((row.get(0), offset as usize, size as usize))
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
     }
 
     /// Try to find a block in the indexed files
     pub fn get_block(
         &self,
         hash: &HashDigest,
-    ) -> Result<Option<(PathBuf, usize)>, Error>
+    ) -> Result<Option<(PathBuf, usize, usize)>, Error>
     {
         get_block(&self.tx, hash)
     }
@@ -266,11 +294,12 @@ impl<'a> IndexTransaction<'a> {
                     }
                     ChunkInput::End => {
                         let digest = HashDigest(sha1.digest().bytes());
+                        let size = offset - start_offset;
                         debug!(
                             "Adding block, offset={}, size={}, sha1={}",
-                            start_offset, offset - start_offset, digest,
+                            start_offset, size, digest,
                         );
-                        self.add_block(&digest, file_id, start_offset)?;
+                        self.add_block(&digest, file_id, start_offset, size)?;
                         start_offset = offset;
                         sha1.reset();
                     }
@@ -321,7 +350,7 @@ mod tests {
         )).expect("get");
         assert_eq!(
             block1,
-            Some((file.path().into(), 0)),
+            Some((file.path().into(), 0, 11579)),
         );
         let block2 = index.get_block(&HashDigest(
             *b"\x57\x0d\x8b\x30\xfc\xfd\x58\x5e\x41\x27\
@@ -329,7 +358,7 @@ mod tests {
         )).expect("get");
         assert_eq!(
             block2,
-            Some((file.path().into(), 11579)),
+            Some((file.path().into(), 11579, 32768)),
         );
         let block3 = index.get_block(&HashDigest(
             *b"\xb9\xa8\xc2\x64\x1a\xf2\xcf\x8f\xd8\xf3\
@@ -337,7 +366,7 @@ mod tests {
         )).expect("get");
         assert_eq!(
             block3,
-            Some((file.path().into(), 44347)),
+            Some((file.path().into(), 44347, 546)),
         );
         assert_eq!(block3.unwrap().1 - block2.unwrap().1, MAX_BLOCK_SIZE);
     }
