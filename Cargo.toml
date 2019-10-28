@@ -5,7 +5,7 @@ authors = ["Remi Rampin <r@remirampin.com>"]
 description = "A clone of rsync in Rust"
 readme = "README.md"
 repository = "https://github.com/remram44/rrsync"
-keywords = ["sync", "rsync", "data-management", "data-transfer", "file-sharing", "file-transfer"]
+keywords = ["sync", "rsync", "data-management", "file-sharing", "file-transfer"]
 license = "BSD-3-Clause"
 
 [dependencies]
