@@ -26,7 +26,7 @@ pub mod fs;
 use std::path::{Path, PathBuf};
 
 use crate::{Error, HashDigest};
-use crate::index::Index;
+use crate::index::IndexTransaction;
 
 /// The sink, representing where the files are being sent.
 ///
@@ -84,15 +84,20 @@ pub trait Source {
 
 pub trait SinkExt {
     /// Feed a whole new index
-    fn new_index(&mut self, new_index: &Index) -> Result<(), Error>;
+    fn new_index(&mut self, index: &IndexTransaction) -> Result<(), Error>;
 }
 
 impl<R: Sink> SinkExt for R {
     /// Feed a whole new index
-    fn new_index(&mut self, new_index: &Index) -> Result<(), Error> {
-        // TODO: Go over index and feed it to new_file()/new_block()
-        // Maybe can be more efficient? Don't know
-        unimplemented!()
+    fn new_index(&mut self, index: &IndexTransaction) -> Result<(), Error> {
+        for (file_id, path, modified) in index.list_files()? {
+            self.new_file(&path, modified)?;
+            for (hash, _offset, size) in index.list_file_blocks(file_id)? {
+                self.new_block(&hash, size)?;
+            }
+        }
+        self.end_files()?;
+        Ok(())
     }
 }
 
