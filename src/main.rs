@@ -1,5 +1,4 @@
 extern crate clap;
-#[macro_use] extern crate log;
 extern crate env_logger;
 extern crate rrsync;
 
@@ -7,7 +6,7 @@ use clap::{App, Arg, SubCommand};
 use std::env;
 use std::path::Path;
 
-use rrsync::{Error, Index, IndexTransaction};
+use rrsync::{Error, Index};
 
 /// Command-line entrypoint
 fn main() {
@@ -76,8 +75,8 @@ fn main() {
 
             let mut index = Index::open(index_filename.into())?;
             let mut index_tx = index.transaction()?;
-            index_path(&mut index_tx, path)?;
-            remove_missing_files(&mut index_tx, path)?;
+            index_tx.index_path(path)?;
+            index_tx.remove_missing_files(path)?;
             index_tx.commit()?;
 
             Ok(())
@@ -92,44 +91,4 @@ fn main() {
         eprintln!("{}", e);
         std::process::exit(1);
     }
-}
-
-/// Recursively descends in directories and add all files to the index
-fn index_path<'a>(
-    index: &mut IndexTransaction<'a>,
-    path: &Path,
-) -> Result<(), Error>
-{
-    if path.is_dir() {
-        info!("Indexing directory {:?}", path);
-        for entry in path.read_dir()? {
-            if let Ok(entry) = entry {
-                index_path(index, &entry.path())?;
-            }
-        }
-        Ok(())
-    } else {
-        let path = if path.starts_with(".") {
-            path.strip_prefix(".").unwrap()
-        } else {
-            path
-        };
-        info!("Indexing file {:?}", path);
-        index.index_file(&path)
-    }
-}
-
-/// List all files and remove those that don't exist on disk
-fn remove_missing_files<'a>(
-    index: &mut IndexTransaction<'a>,
-    path: &Path,
-) -> Result<(), Error>
-{
-    for (file_id, file_path) in index.list_files()? {
-        if !path.join(&file_path).is_file() {
-            info!("Removing missing file {:?}", file_path);
-            index.remove_file(file_id)?;
-        }
-    }
-    Ok(())
 }

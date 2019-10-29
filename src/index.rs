@@ -309,6 +309,39 @@ impl<'a> IndexTransaction<'a> {
         Ok(())
     }
 
+    /// Index files and directories recursively
+    pub fn index_path(&mut self, path: &Path) -> Result<(), Error> {
+        if path.is_dir() {
+            info!("Indexing directory {:?}", path);
+            for entry in path.read_dir()? {
+                if let Ok(entry) = entry {
+                    self.index_path(&entry.path())?;
+                }
+            }
+            Ok(())
+        } else {
+            let path = if path.starts_with(".") {
+                path.strip_prefix(".").unwrap()
+            } else {
+                path
+            };
+            info!("Indexing file {:?}", path);
+            self.index_file(&path)
+        }
+    }
+
+    /// List all files and remove those that don't exist on disk
+    pub fn remove_missing_files(&mut self, path: &Path) -> Result<(), Error>
+    {
+        for (file_id, file_path) in self.list_files()? {
+            if !path.join(&file_path).is_file() {
+                info!("Removing missing file {:?}", file_path);
+                self.remove_file(file_id)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Commit the transaction
     pub fn commit(self) -> Result<(), rusqlite::Error> {
         self.tx.commit()
