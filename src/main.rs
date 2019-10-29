@@ -7,6 +7,8 @@ use std::env;
 use std::path::Path;
 
 use rrsync::{Error, Index};
+use rrsync::locations::Location;
+use rrsync::sync::do_sync;
 
 /// Command-line entrypoint
 fn main() {
@@ -36,6 +38,42 @@ fn main() {
                         .takes_value(true)
                         .default_value("rrsync.idx"),
                 ),
+        )
+        .subcommand(
+            SubCommand::with_name("sync")
+                .about("Copy files")
+                .arg(
+                    Arg::with_name("source")
+                        .required(true)
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("destination")
+                        .required(true)
+                        .takes_value(true),
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("remote-recv")
+                .about("Internal - process started on the remote to receive \
+                        files. Expects stdin and stdout to be connected to the \
+                        sender process")
+                .arg(
+                    Arg::with_name("destination")
+                        .required(true)
+                        .takes_value(true),
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("remote-send")
+                .about("Internal - process started on the remote to send \
+                        files. Expects stdin and stdout to be connected to \
+                        the receiver process")
+                .arg(
+                    Arg::with_name("source")
+                        .required(true)
+                        .takes_value(true),
+                )
         );
 
     let mut cli = cli;
@@ -81,6 +119,60 @@ fn main() {
 
             Ok(())
         }(),
+        Some("sync") => {
+            let s_matches = matches.subcommand_matches("sync").unwrap();
+            let source = s_matches.value_of_os("source").unwrap();
+            let dest = s_matches.value_of_os("destination").unwrap();
+
+            let source = match source.to_str().and_then(Location::parse) {
+                Some(s) => s,
+                None => {
+                    eprintln!("Invalid source");
+                    std::process::exit(2);
+                }
+            };
+            let dest = match dest.to_str().and_then(Location::parse) {
+                Some(Location::Http(_)) => {
+                    eprintln!("Can't write to HTTP destination, only read");
+                    std::process::exit(2);
+                }
+                Some(s) => s,
+                None => {
+                    eprintln!("Invalid destination");
+                    std::process::exit(2);
+                }
+            };
+
+            let mut source_wrapper: Box<dyn rrsync::sync::SourceWrapper> = match source.open_source() {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("Failed to open source: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let source_obj: Box<dyn rrsync::sync::Source> = match source_wrapper.open() {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("Failed to prepare source: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let mut sink_wrapper: Box<dyn rrsync::sync::SinkWrapper> = match dest.open_sink() {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("Failed to open destination: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let sink_obj: Box<dyn rrsync::sync::Sink> = match sink_wrapper.open() {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("Failed to prepare destination: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            do_sync(source_obj, sink_obj)
+        }
         _ => {
             cli.print_help().expect("Can't print help");
             std::process::exit(2);
