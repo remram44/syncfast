@@ -11,7 +11,9 @@ This is an rsync clone written in the [Rust](https://www.rust-lang.org/) program
 Current status
 ==============
 
-I am still implementing core functionality. This is NOT ready for production use.
+Core functionality is there. You can index and sync local folders.
+
+The next step is implementing SSH and HTTP remotes.
 
 How to use
 ==========
