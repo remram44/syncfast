@@ -111,7 +111,7 @@ fn main() {
             let index_filename = Path::new(index_filename);
             let path = Path::new(s_matches.value_of_os("path").unwrap());
 
-            let mut index = Index::open(index_filename.into())?;
+            let mut index = Index::open(index_filename)?;
             let mut index_tx = index.transaction()?;
             index_tx.index_path(path)?;
             index_tx.remove_missing_files(path)?;

@@ -45,10 +45,8 @@ impl Location {
             // Return None if starts with [a-z]+:/
             for (i, c) in s.char_indices() {
                 if c == ':' {
-                    if i > 0 {
-                        if &s[i + 1..i + 2] == "/" {
-                            return None;
-                        }
+                    if i > 0 && &s[i + 1..i + 2] == "/" {
+                        return None;
                     }
                 } else if !c.is_ascii_alphabetic() {
                     break;

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{Error, HashDigest};
 
-const SCHEMA: &'static str = "
+const SCHEMA: &str = "
     CREATE TABLE version(
         name VARCHAR(8) NOT NULL,
         version VARCHAR(16) NOT NULL
@@ -96,9 +96,9 @@ impl Index {
     }
 
     /// Start a transaction to update the index
-    pub fn transaction<'a>(
-        &'a mut self
-    ) -> Result<IndexTransaction<'a>, rusqlite::Error>
+    pub fn transaction(
+        &mut self
+    ) -> Result<IndexTransaction, rusqlite::Error>
     {
         let tx = self.db.transaction()?;
         Ok(IndexTransaction { tx })
@@ -481,10 +481,10 @@ mod tests {
     fn test() {
         let mut file = NamedTempFile::new().expect("tempfile");
         for i in 0..2000 {
-            write!(file, "Line {}\n", i + 1).expect("tempfile");
+            writeln!(file, "Line {}", i + 1).expect("tempfile");
         }
         for _ in 0..2000 {
-            write!(file, "Test content\n").expect("tempfile");
+            writeln!(file, "Test content").expect("tempfile");
         }
         file.flush().expect("tempfile");
         let name = Path::new("dir/name").to_path_buf();

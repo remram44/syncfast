@@ -47,12 +47,17 @@ fn write_block(
     Ok(())
 }
 
+struct BlockDestination {
+    temp_file: Rc<RefCell<TempFile>>,
+    offset: usize,
+}
+
 /// Local filesystem sink, e.g. `Sink` that writes files.
 pub struct FsSink<'a> {
     index: IndexTransaction<'a>,
     root_dir: &'a Path,
     current_file: Option<(usize, Rc<RefCell<TempFile>>)>,
-    waiting_blocks: HashMap<HashDigest, Vec<(Rc<RefCell<TempFile>>, usize)>>,
+    waiting_blocks: HashMap<HashDigest, Vec<BlockDestination>>,
     blocks_to_request: VecDeque<HashDigest>,
 }
 
@@ -102,7 +107,7 @@ impl<'a> Sink for FsSink<'a> {
         // Make temp file path, which will be swapped at the end
         let temp_name = {
             let mut base_name = name.file_name()
-                .ok_or(Error::Io(std::io::Error::new(
+                .ok_or_else(|| Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "Invalid file name",
                 )))?
@@ -148,7 +153,7 @@ impl<'a> Sink for FsSink<'a> {
     {
         let &mut (ref mut offset, ref mut file) = &mut self.current_file
             .as_mut()
-            .ok_or(Error::Io(std::io::Error::new(
+            .ok_or_else(|| Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Got a block before any file",
             )))?;
@@ -181,12 +186,18 @@ impl<'a> Sink for FsSink<'a> {
                 match self.waiting_blocks.entry(hash.clone()) {
                     Entry::Occupied(ref mut destinations) => {
                         // Add this to the list of where to write the block
-                        destinations.get_mut().push((file.clone(), *offset));
+                        destinations.get_mut().push(BlockDestination {
+                            temp_file: file.clone(),
+                            offset: *offset,
+                        });
                         info!("Block has already been requested");
                     }
                     Entry::Vacant(v) => {
                         // Request it
-                        v.insert(vec![(file.clone(), *offset)]);
+                        v.insert(vec![BlockDestination {
+                            temp_file: file.clone(),
+                            offset: *offset,
+                        }]);
                         self.blocks_to_request.push_back(hash.clone());
                         info!("Requesting block");
                     }
@@ -210,7 +221,8 @@ impl<'a> Sink for FsSink<'a> {
         // Write the block to the destinations waiting for it
         if let Some(destinations) = self.waiting_blocks.remove(hash) {
             info!("Got block {}", hash);
-            for (file, offset) in destinations.into_iter() {
+            for destination in destinations.into_iter() {
+                let BlockDestination { temp_file: file, offset } = destination;
                 info!(
                     "Writing block to {:?} offset={}",
                     file.borrow().name, offset,
