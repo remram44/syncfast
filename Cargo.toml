@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Remi Rampin <r@remirampin.com>"]
 description = "rsync/rdiff/zsync clone"
 repository = "https://github.com/remram44/rrsync"
+documentation = "https://docs.rs/rrsync/"
 license = "BSD-3-Clause"
 
 [[bin]]

@@ -1,4 +1,7 @@
 [![Build Status](https://travis-ci.org/remram44/rrsync.svg?branch=master)](https://travis-ci.org/remram44/rrsync/builds)
+[![Crates.io](https://img.shields.io/crates/v/rrsync.svg)](https://crates.io/crates/rrsync)
+[![Documentation](https://docs.rs/rrsync/badge.svg)](https://docs.rs/rrsync)
+[![License](https://img.shields.io/crates/l/rrsync.svg)](https://github.com/remram44/rrsync/blob/master/LICENSE.txt)
 [![Say Thanks!](https://img.shields.io/badge/Say%20Thanks-!-1EAEDB.svg)](https://saythanks.io/to/remram44)
 
 What is this?
