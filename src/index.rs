@@ -110,8 +110,8 @@ pub struct IndexTransaction<'a> {
     tx: Transaction<'a>,
 }
 
-const ZPAQ_BITS: usize = 13; // 13 bits = 8 KiB block average
-const MAX_BLOCK_SIZE: usize = 1 << 15; // 32 KiB
+pub const ZPAQ_BITS: usize = 13; // 13 bits = 8 KiB block average
+pub const MAX_BLOCK_SIZE: usize = 1 << 15; // 32 KiB
 
 impl<'a> IndexTransaction<'a> {
     /// Add a file to the index
@@ -171,6 +171,55 @@ impl<'a> IndexTransaction<'a> {
         }
     }
 
+    /// Replace file in the index
+    ///
+    /// This is like add_file but will always replace an existing file.
+    pub fn add_file_overwrite(
+        &mut self,
+        name: &Path,
+        modified: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u32, Error>
+    {
+        let mut stmt = self.tx.prepare(
+            "
+            SELECT file_id, modified FROM files
+            WHERE name = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
+        if let Some(row) = rows.next() {
+            let row = row?;
+            let file_id: u32 = row.get(0);
+            info!("Resetting file {:?}", name);
+            // Delete blocks
+            self.tx.execute(
+                "
+                DELETE FROM blocks WHERE file_id = ?;
+                ",
+                &[&file_id],
+            )?;
+            // Update modification time
+            self.tx.execute(
+                "
+                UPDATE files SET modified = ? WHERE file_id = ?;
+                ",
+                &[&modified as &dyn ToSql, &file_id],
+            )?;
+            Ok(file_id)
+        } else {
+            info!("Inserting new file {:?}", name);
+            self.tx.execute(
+                "
+                INSERT INTO files(name, modified)
+                VALUES(?, ?);
+                ",
+                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
+            )?;
+            let file_id = self.tx.last_insert_rowid();
+            Ok(file_id as u32)
+        }
+    }
+
     /// Remove a file and all its blocks from the index
     pub fn remove_file(
         &mut self,
@@ -188,6 +237,43 @@ impl<'a> IndexTransaction<'a> {
             DELETE FROM files WHERE file_id = ?;
             ",
             &[&file_id],
+        )?;
+        Ok(())
+    }
+
+    /// Move a file, possibly over another
+    pub fn move_file(
+        &mut self,
+        file_id: u32,
+        destination: &Path,
+    ) -> Result<(), Error>
+    {
+        let destination = destination.to_str().expect("encoding");
+
+        // Delete old file
+        self.tx.execute(
+            "
+            DELETE FROM blocks WHERE file_id = (
+                SELECT file_id FROM files
+                WHERE name = ?
+            );
+            ",
+            &[destination],
+        )?;
+        self.tx.execute(
+            "
+            DELETE FROM files WHERE name = ?;
+            ",
+            &[destination],
+        )?;
+
+        // Move new file
+        self.tx.execute(
+            "
+            UPDATE files SET name = ?
+            WHERE file_id = ?;
+            ",
+            &[&destination as &dyn ToSql, &file_id],
         )?;
         Ok(())
     }
@@ -236,6 +322,28 @@ impl<'a> IndexTransaction<'a> {
         Ok(())
     }
 
+    /// Add a block, discarding overlapping blocks
+    pub(crate) fn replace_block(
+        &mut self,
+        hash: &HashDigest,
+        file_id: u32,
+        offset: usize,
+        size: usize,
+    ) -> Result<(), Error>
+    {
+        self.tx.execute(
+            "DELETE FROM blocks
+            WHERE file_id = ? AND offset + size > ? AND offset < ?;
+            ",
+            &[
+                &file_id as &dyn ToSql,
+                &(offset as i64),
+                &((offset + size) as i64),
+            ],
+        )?;
+        self.add_block(hash, file_id, offset, size)
+    }
+
     /// Get a list of all the blocks in a specific file
     pub fn list_file_blocks(&self, file_id: u32) -> Result<Vec<(HashDigest, usize, usize)>, Error> {
         let mut stmt = self.tx.prepare(
@@ -272,10 +380,11 @@ impl<'a> IndexTransaction<'a> {
     /// Cut up a file into blocks and add them to the index
     pub fn index_file(
         &mut self,
+        path: &Path,
         name: &Path,
     ) -> Result<(), Error>
     {
-        let file = File::open(name)?;
+        let file = File::open(path)?;
         let (file_id, up_to_date) = self.add_file(
             name,
             file.metadata()?.modified()?.into(),
@@ -314,22 +423,30 @@ impl<'a> IndexTransaction<'a> {
 
     /// Index files and directories recursively
     pub fn index_path(&mut self, path: &Path) -> Result<(), Error> {
+        self.index_path_rec(path, Path::new(""))
+    }
+
+    fn index_path_rec(&mut self, root: &Path, rel: &Path) -> Result<(), Error> {
+        let path = root.join(rel);
         if path.is_dir() {
-            info!("Indexing directory {:?}", path);
+            info!("Indexing directory {:?} ({:?})", rel, path);
             for entry in path.read_dir()? {
                 if let Ok(entry) = entry {
-                    self.index_path(&entry.path())?;
+                    if entry.file_name() == ".rrsync.idx" {
+                        continue;
+                    }
+                    self.index_path_rec(root, &rel.join(entry.file_name()))?;
                 }
             }
             Ok(())
         } else {
-            let path = if path.starts_with(".") {
-                path.strip_prefix(".").unwrap()
+            let rel = if rel.starts_with(".") {
+                rel.strip_prefix(".").unwrap()
             } else {
-                path
+                rel
             };
-            info!("Indexing file {:?}", path);
-            self.index_file(&path)
+            info!("Indexing file {:?} ({:?})", rel, path);
+            self.index_file(&path, &rel)
         }
     }
 
@@ -354,6 +471,7 @@ impl<'a> IndexTransaction<'a> {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::path::Path;
     use tempfile::NamedTempFile;
 
     use crate::HashDigest;
@@ -369,10 +487,11 @@ mod tests {
             write!(file, "Test content\n").expect("tempfile");
         }
         file.flush().expect("tempfile");
+        let name = Path::new("dir/name").to_path_buf();
         let mut index = Index::open_in_memory().expect("db");
         {
             let mut tx = index.transaction().expect("db");
-            tx.index_file(file.path()).expect("index");
+            tx.index_file(file.path(), &name).expect("index");
             tx.commit().expect("db");
         }
         assert!(
@@ -386,7 +505,7 @@ mod tests {
         )).expect("get");
         assert_eq!(
             block1,
-            Some((file.path().into(), 0, 11579)),
+            Some((name.clone(), 0, 11579)),
         );
         let block2 = index.get_block(&HashDigest(
             *b"\x57\x0d\x8b\x30\xfc\xfd\x58\x5e\x41\x27\
@@ -394,7 +513,7 @@ mod tests {
         )).expect("get");
         assert_eq!(
             block2,
-            Some((file.path().into(), 11579, 32768)),
+            Some((name.clone(), 11579, 32768)),
         );
         let block3 = index.get_block(&HashDigest(
             *b"\xb9\xa8\xc2\x64\x1a\xf2\xcf\x8f\xd8\xf3\
@@ -402,7 +521,7 @@ mod tests {
         )).expect("get");
         assert_eq!(
             block3,
-            Some((file.path().into(), 44347, 546)),
+            Some((name.clone(), 44347, 546)),
         );
         assert_eq!(block3.unwrap().1 - block2.unwrap().1, MAX_BLOCK_SIZE);
     }

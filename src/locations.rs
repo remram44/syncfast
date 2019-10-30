@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+use crate::Error;
+use crate::sync::{SinkWrapper, SourceWrapper};
+use crate::sync::fs::{FsSinkWrapper, FsSourceWrapper};
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Location {
     Local(PathBuf),
@@ -53,6 +57,30 @@ impl Location {
 
             Some(Location::Local(s.into()))
         }
+    }
+
+    pub fn open_sink(&self) -> Result<Box<dyn SinkWrapper>, Error> {
+        let w = match self {
+            Location::Local(path) => Box::new(FsSinkWrapper::new(path)?),
+            Location::Ssh { user, host, path } => unimplemented!(), // TODO: SSH
+            Location::Http(url) => {
+                // Shouldn't happen, caught in main.rs
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Can't write to HTTP location",
+                )));
+            }
+        };
+        Ok(w)
+    }
+
+    pub fn open_source(&self) -> Result<Box<dyn SourceWrapper>, Error> {
+        let w = match self {
+            Location::Local(path) => Box::new(FsSourceWrapper::new(path)?),
+            Location::Ssh { user, host, path } => unimplemented!(), // TODO: SSH
+            Location::Http(url) => unimplemented!(), // TODO: HTTP
+        };
+        Ok(w)
     }
 }
 

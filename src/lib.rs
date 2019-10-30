@@ -16,6 +16,7 @@ extern crate sha1;
 
 pub mod locations;
 mod index;
+pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
 use std::fmt;
@@ -54,7 +55,7 @@ impl From<std::io::Error> for Error {
 }
 
 /// Type for the hashes
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HashDigest([u8; 20]);
 
 impl ToSql for HashDigest {
