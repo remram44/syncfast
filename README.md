@@ -9,8 +9,6 @@ What is this?
 
 This is an rsync clone written in the [Rust](https://www.rust-lang.org/) programming language. It is intended to provide the functionality of rsync, rdiff, and zsync in one single program, as well as some additions such as caching file signatures to make repeated synchronizations faster. It will also provide a library, allowing to use the functionality in your own programs.
 
-[Generated documentation](https://remram44.github.io/rrsync/rrsync/index.html)
-
 Current status
 ==============
 
