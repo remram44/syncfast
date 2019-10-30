@@ -14,9 +14,11 @@ extern crate rusqlite;
 extern crate sha1;
 #[cfg(test)] extern crate tempfile;
 
+pub mod locations;
 mod index;
+pub mod sync;
 
-use rusqlite::types::{ToSql, ToSqlOutput};
+use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
 use std::fmt;
 use std::io::Write;
 
@@ -53,7 +55,7 @@ impl From<std::io::Error> for Error {
 }
 
 /// Type for the hashes
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HashDigest([u8; 20]);
 
 impl ToSql for HashDigest {
@@ -70,6 +72,53 @@ impl ToSql for HashDigest {
     }
 }
 
+#[derive(Debug)]
+enum InvalidHashDigest {
+    WrongSize,
+    InvalidChar,
+}
+
+impl fmt::Display for InvalidHashDigest {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            InvalidHashDigest::WrongSize => {
+                write!(f, "Invalid hash: wrong size")
+            }
+            InvalidHashDigest::InvalidChar => {
+                write!(f, "Invalid hash: invalid character")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InvalidHashDigest {}
+
+impl FromSql for HashDigest {
+    fn column_result(
+        value: rusqlite::types::ValueRef,
+    ) -> Result<HashDigest, FromSqlError>
+    {
+        value
+            .as_str()
+            .and_then(|s| {
+                if s.len() != 40 {
+                    Err(FromSqlError::Other(Box::new(
+                        InvalidHashDigest::WrongSize
+                    )))
+                } else {
+                    let mut bytes = [0u8; 20];
+                    for (i, byte) in (&mut bytes).iter_mut().enumerate() {
+                        *byte = u8::from_str_radix(&s[i*2 .. i*2 + 2], 16)
+                            .map_err(|_| FromSqlError::Other(Box::new(
+                                InvalidHashDigest::InvalidChar
+                            )))?;
+                    }
+                    Ok(HashDigest(bytes))
+                }
+            })
+    }
+}
+
 impl fmt::Display for HashDigest {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for byte in &self.0 {
@@ -81,7 +130,7 @@ impl fmt::Display for HashDigest {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::types::{ToSql, ToSqlOutput, Value};
+    use rusqlite::types::{FromSql, ToSql, ToSqlOutput, Value, ValueRef};
     use sha1::Sha1;
 
     use super::HashDigest;
@@ -96,6 +145,21 @@ mod tests {
             ToSqlOutput::Owned(
                 Value::Text("a94a8fe5ccb19ba61c4c0873d391e987982fbbd3".into())
             ),
+        );
+    }
+
+    #[test]
+    fn test_hash_fromsql() {
+        let mut sha1 = Sha1::new();
+        sha1.update(b"test");
+        let digest = HashDigest(sha1.digest().bytes());
+
+        let hash = <HashDigest as FromSql>::column_result(ValueRef::Text(
+            "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"
+        ));
+        assert_eq!(
+            hash.unwrap(),
+            digest,
         );
     }
 }
