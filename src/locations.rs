@@ -1,24 +1,35 @@
+//! File locations that we can sync from/to.
+
 use std::path::PathBuf;
 
 use crate::Error;
 use crate::sync::{SinkWrapper, SourceWrapper};
 use crate::sync::fs::{FsSinkWrapper, FsSourceWrapper};
 
+/// SSH remote path, with user and host
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SshLocation {
+    /// Optional user name. If omitted, local user will be used.
     pub user: Option<String>,
+    /// Remote host name
     pub host: String,
+    /// Path on the remote machine (may be relative to home)
     pub path: String,
 }
 
+/// A location, possible remote, that can be specified by the user
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Location {
+    /// A path on the local machine
     Local(PathBuf),
+    /// Remote directory accessible via SSH
     Ssh(SshLocation),
+    /// Remote HTTP server
     Http(String),
 }
 
 impl Location {
+    /// Parse a string into a location
     pub fn parse(s: &str) -> Option<Location> {
         if s.starts_with("http://") || s.starts_with("https://") {
             Some(Location::Http(s.into()))
@@ -60,6 +71,7 @@ impl Location {
         }
     }
 
+    /// Create a `Sink` to sync to this location
     pub fn open_sink(&self) -> Result<Box<dyn SinkWrapper>, Error> {
         let w = match self {
             Location::Local(path) => Box::new(FsSinkWrapper::new(path)?),
@@ -75,6 +87,7 @@ impl Location {
         Ok(w)
     }
 
+    /// Create a `Source` to sync from this location
     pub fn open_source(&self) -> Result<Box<dyn SourceWrapper>, Error> {
         let w = match self {
             Location::Local(path) => Box::new(FsSourceWrapper::new(path)?),

@@ -82,13 +82,13 @@ pub trait Source {
     fn get_next_block(&mut self) -> Result<Option<(HashDigest, Vec<u8>)>, Error>;
 }
 
+/// Additional methods for `Sink`, through an auto-implemented trait
 pub trait SinkExt {
     /// Feed a whole new index
     fn new_index(&mut self, index: &IndexTransaction) -> Result<(), Error>;
 }
 
 impl<R: Sink> SinkExt for R {
-    /// Feed a whole new index
     fn new_index(&mut self, index: &IndexTransaction) -> Result<(), Error> {
         for (file_id, path, modified) in index.list_files()? {
             self.new_file(&path, modified)?;
@@ -169,6 +169,10 @@ impl<SW: SourceWrapper + ?Sized> SourceWrapper for Box<SW> {
     }
 }
 
+/// Sync from the source to the sink.
+///
+/// This takes care of sending instructions and blocks, and the missing block
+/// requests backwards.
 pub fn do_sync<S: Source, R: Sink>(mut source: S, mut sink: R) -> Result<(), Error> {
     let mut instructions = true;
     while instructions || sink.is_missing_blocks()? {

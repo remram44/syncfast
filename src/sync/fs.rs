@@ -1,3 +1,5 @@
+//! Synchronization from and to local files.
+
 use cdchunking::{Chunker, ZPAQ};
 use std::cell::RefCell;
 use std::collections::VecDeque;
