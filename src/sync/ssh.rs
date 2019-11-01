@@ -193,6 +193,10 @@ impl Source for SshSource {
         };
         Ok(res)
     }
+
+    fn end(&mut self) -> Result<(), Error> {
+        unimplemented!() // TODO: Specific signal indicating we're done
+    }
 }
 
 /// Decode stream from the remote source, parsing instructions and blocks
