@@ -95,6 +95,9 @@ pub trait Source {
     fn get_next_block(
         &mut self,
     ) -> Result<Option<(HashDigest, Vec<u8>)>, Error>;
+
+    /// The sink is done, and will not request another block
+    fn end(&mut self) -> Result<(), Error>;
 }
 
 /// Additional methods for `Sink`, through an auto-implemented trait
@@ -168,6 +171,10 @@ impl<S: Source + ?Sized> Source for Box<S> {
     ) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
         (**self).get_next_block()
     }
+
+    fn end(&mut self) -> Result<(), Error> {
+        (**self).end()
+    }
 }
 
 /// Wrapper for ownership reasons
@@ -237,5 +244,8 @@ pub fn do_sync<S: Source, R: Sink>(
             }
         }
     }
+    // Indicate to the source that the sink is done
+    // (it will not request another block)
+    source.end()?;
     Ok(())
 }

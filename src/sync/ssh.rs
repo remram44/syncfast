@@ -46,7 +46,8 @@ fn recv_errors(stderr: ChildStderr, prefix: &'static str) {
 /// Sink writing to a remote machine via SSH
 pub struct SshSink {
     child: Child,
-    block_reqs_rx: mpsc::Receiver<HashDigest>,
+    block_reqs_rx: mpsc::Receiver<Option<HashDigest>>,
+    done: bool,
 }
 
 impl Drop for SshSink {
@@ -99,7 +100,11 @@ impl Sink for SshSink {
 
     fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error> {
         let hash = match self.block_reqs_rx.try_recv() {
-            Ok(hash) => Some(hash),
+            Ok(Some(hash)) => Some(hash),
+            Ok(None) => {
+                self.done = true;
+                None
+            }
             Err(mpsc::TryRecvError::Empty) => None,
             Err(e @ mpsc::TryRecvError::Disconnected) => {
                 return Err(Error::Io(std::io::Error::new(
@@ -112,12 +117,15 @@ impl Sink for SshSink {
     }
 
     fn is_missing_blocks(&self) -> Result<bool, Error> {
-        unimplemented!() // TODO: Implement specific signal for this
+        Ok(!self.done)
     }
 }
 
 /// Decode stream from the remote sink, parsing block requests
-fn recv_from_sink(stdout: ChildStdout, tx: mpsc::SyncSender<HashDigest>) {
+fn recv_from_sink(
+    stdout: ChildStdout,
+    tx: mpsc::SyncSender<Option<HashDigest>>,
+) {
     // TODO: Read from sink stdout, parse block requests
     unimplemented!()
 }
@@ -133,6 +141,7 @@ impl SinkWrapper for SshWrapper {
         Ok(Box::new(SshSink {
             child,
             block_reqs_rx,
+            done: false,
         }))
     }
 }

@@ -339,6 +339,10 @@ impl<'a> Source for FsSource<'a> {
             None => Ok(None),
         }
     }
+
+    fn end(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub struct FsSinkWrapper {
