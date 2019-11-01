@@ -1,4 +1,4 @@
-use cdchunking::{Chunker, ChunkInput, ZPAQ};
+use cdchunking::{ChunkInput, Chunker, ZPAQ};
 use rusqlite;
 use rusqlite::{Connection, Transaction};
 use rusqlite::types::ToSql;
@@ -37,8 +37,7 @@ const SCHEMA: &str = "
 fn get_block(
     db: &Connection,
     hash: &HashDigest,
-) -> Result<Option<(PathBuf, usize, usize)>, Error>
-{
+) -> Result<Option<(PathBuf, usize, usize)>, Error> {
     let mut stmt = db.prepare(
         "
         SELECT files.name, blocks.offset, blocks.size
@@ -90,16 +89,14 @@ impl Index {
     pub fn get_block(
         &self,
         hash: &HashDigest,
-    ) -> Result<Option<(PathBuf, usize, usize)>, Error>
-    {
+    ) -> Result<Option<(PathBuf, usize, usize)>, Error> {
         get_block(&self.db, hash)
     }
 
     /// Start a transaction to update the index
     pub fn transaction(
-        &mut self
-    ) -> Result<IndexTransaction, rusqlite::Error>
-    {
+        &mut self,
+    ) -> Result<IndexTransaction, rusqlite::Error> {
         let tx = self.db.transaction()?;
         Ok(IndexTransaction { tx })
     }
@@ -123,8 +120,7 @@ impl<'a> IndexTransaction<'a> {
         &mut self,
         name: &Path,
         modified: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(u32, bool), Error>
-    {
+    ) -> Result<(u32, bool), Error> {
         let mut stmt = self.tx.prepare(
             "
             SELECT file_id, modified FROM files
@@ -178,8 +174,7 @@ impl<'a> IndexTransaction<'a> {
         &mut self,
         name: &Path,
         modified: chrono::DateTime<chrono::Utc>,
-    ) -> Result<u32, Error>
-    {
+    ) -> Result<u32, Error> {
         let mut stmt = self.tx.prepare(
             "
             SELECT file_id, modified FROM files
@@ -221,11 +216,7 @@ impl<'a> IndexTransaction<'a> {
     }
 
     /// Remove a file and all its blocks from the index
-    pub fn remove_file(
-        &mut self,
-        file_id: u32,
-    ) -> Result<(), Error>
-    {
+    pub fn remove_file(&mut self, file_id: u32) -> Result<(), Error> {
         self.tx.execute(
             "
             DELETE FROM blocks WHERE file_id = ?;
@@ -246,8 +237,7 @@ impl<'a> IndexTransaction<'a> {
         &mut self,
         file_id: u32,
         destination: &Path,
-    ) -> Result<(), Error>
-    {
+    ) -> Result<(), Error> {
         let destination = destination.to_str().expect("encoding");
 
         // Delete old file
@@ -310,14 +300,18 @@ impl<'a> IndexTransaction<'a> {
         file_id: u32,
         offset: usize,
         size: usize,
-    ) -> Result<(), Error>
-    {
+    ) -> Result<(), Error> {
         self.tx.execute(
             "
             INSERT INTO blocks(hash, file_id, offset, size)
             VALUES(?, ?, ?, ?);
             ",
-            &[&hash as &dyn ToSql, &file_id, &(offset as i64), &(size as i64)],
+            &[
+                &hash as &dyn ToSql,
+                &file_id,
+                &(offset as i64),
+                &(size as i64),
+            ],
         )?;
         Ok(())
     }
@@ -329,8 +323,7 @@ impl<'a> IndexTransaction<'a> {
         file_id: u32,
         offset: usize,
         size: usize,
-    ) -> Result<(), Error>
-    {
+    ) -> Result<(), Error> {
         self.tx.execute(
             "DELETE FROM blocks
             WHERE file_id = ? AND offset + size > ? AND offset < ?;
@@ -345,7 +338,10 @@ impl<'a> IndexTransaction<'a> {
     }
 
     /// Get a list of all the blocks in a specific file
-    pub fn list_file_blocks(&self, file_id: u32) -> Result<Vec<(HashDigest, usize, usize)>, Error> {
+    pub fn list_file_blocks(
+        &self,
+        file_id: u32,
+    ) -> Result<Vec<(HashDigest, usize, usize)>, Error> {
         let mut stmt = self.tx.prepare(
             "
             SELECT hash, offset, size FROM blocks
@@ -372,8 +368,7 @@ impl<'a> IndexTransaction<'a> {
     pub fn get_block(
         &self,
         hash: &HashDigest,
-    ) -> Result<Option<(PathBuf, usize, usize)>, Error>
-    {
+    ) -> Result<Option<(PathBuf, usize, usize)>, Error> {
         get_block(&self.tx, hash)
     }
 
@@ -382,8 +377,7 @@ impl<'a> IndexTransaction<'a> {
         &mut self,
         path: &Path,
         name: &Path,
-    ) -> Result<(), Error>
-    {
+    ) -> Result<(), Error> {
         let file = File::open(path)?;
         let (file_id, up_to_date) = self.add_file(
             name,
@@ -392,7 +386,7 @@ impl<'a> IndexTransaction<'a> {
         if !up_to_date {
             // Use ZPAQ to cut the stream into blocks
             let chunker = Chunker::new(
-                ZPAQ::new(ZPAQ_BITS) // 13 bits = 8 KiB block average
+                ZPAQ::new(ZPAQ_BITS), // 13 bits = 8 KiB block average
             ).max_size(MAX_BLOCK_SIZE);
             let mut chunk_iterator = chunker.stream(file);
             let mut start_offset = 0;
@@ -426,7 +420,11 @@ impl<'a> IndexTransaction<'a> {
         self.index_path_rec(path, Path::new(""))
     }
 
-    fn index_path_rec(&mut self, root: &Path, rel: &Path) -> Result<(), Error> {
+    fn index_path_rec(
+        &mut self,
+        root: &Path,
+        rel: &Path,
+    ) -> Result<(), Error> {
         let path = root.join(rel);
         if path.is_dir() {
             info!("Indexing directory {:?} ({:?})", rel, path);
@@ -451,8 +449,7 @@ impl<'a> IndexTransaction<'a> {
     }
 
     /// List all files and remove those that don't exist on disk
-    pub fn remove_missing_files(&mut self, path: &Path) -> Result<(), Error>
-    {
+    pub fn remove_missing_files(&mut self, path: &Path) -> Result<(), Error> {
         for (file_id, file_path, _modified) in self.list_files()? {
             if !path.join(&file_path).is_file() {
                 info!("Removing missing file {:?}", file_path);
@@ -480,10 +477,10 @@ mod tests {
     #[test]
     fn test() {
         let mut file = NamedTempFile::new().expect("tempfile");
-        for i in 0..2000 {
+        for i in 0 .. 2000 {
             writeln!(file, "Line {}", i + 1).expect("tempfile");
         }
-        for _ in 0..2000 {
+        for _ in 0 .. 2000 {
             writeln!(file, "Test content").expect("tempfile");
         }
         file.flush().expect("tempfile");
@@ -494,35 +491,31 @@ mod tests {
             tx.index_file(file.path(), &name).expect("index");
             tx.commit().expect("db");
         }
-        assert!(
-            index.get_block(&HashDigest(*b"12345678901234567890"))
-                .expect("get")
-                .is_none()
-        );
-        let block1 = index.get_block(&HashDigest(
-            *b"\xfb\x5e\xf7\xeb\xad\xd8\x2c\x80\x85\xc5\
-               \xff\x63\x82\x36\x22\xba\xe0\xe2\x63\xf6"
-        )).expect("get");
-        assert_eq!(
-            block1,
-            Some((name.clone(), 0, 11579)),
-        );
-        let block2 = index.get_block(&HashDigest(
-            *b"\x57\x0d\x8b\x30\xfc\xfd\x58\x5e\x41\x27\
-               \xb5\x61\xf5\xec\xd3\x76\xff\x4d\x01\x01"
-        )).expect("get");
-        assert_eq!(
-            block2,
-            Some((name.clone(), 11579, 32768)),
-        );
-        let block3 = index.get_block(&HashDigest(
-            *b"\xb9\xa8\xc2\x64\x1a\xf2\xcf\x8f\xd8\xf3\
-               \x6a\x24\x56\xa3\xea\xa9\x5c\x02\x91\x27"
-        )).expect("get");
-        assert_eq!(
-            block3,
-            Some((name.clone(), 44347, 546)),
-        );
+        assert!(index
+            .get_block(&HashDigest(*b"12345678901234567890"))
+            .expect("get")
+            .is_none());
+        let block1 = index
+            .get_block(&HashDigest(
+                *b"\xfb\x5e\xf7\xeb\xad\xd8\x2c\x80\x85\xc5\
+               \xff\x63\x82\x36\x22\xba\xe0\xe2\x63\xf6",
+            ))
+            .expect("get");
+        assert_eq!(block1, Some((name.clone(), 0, 11579)),);
+        let block2 = index
+            .get_block(&HashDigest(
+                *b"\x57\x0d\x8b\x30\xfc\xfd\x58\x5e\x41\x27\
+               \xb5\x61\xf5\xec\xd3\x76\xff\x4d\x01\x01",
+            ))
+            .expect("get");
+        assert_eq!(block2, Some((name.clone(), 11579, 32768)),);
+        let block3 = index
+            .get_block(&HashDigest(
+                *b"\xb9\xa8\xc2\x64\x1a\xf2\xcf\x8f\xd8\xf3\
+               \x6a\x24\x56\xa3\xea\xa9\x5c\x02\x91\x27",
+            ))
+            .expect("get");
+        assert_eq!(block3, Some((name.clone(), 44347, 546)),);
         assert_eq!(block3.unwrap().1 - block2.unwrap().1, MAX_BLOCK_SIZE);
     }
 }

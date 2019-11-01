@@ -35,16 +35,28 @@ use crate::index::IndexTransaction;
 /// actually updates files.
 pub trait Sink {
     /// Start on a new file
-    fn new_file(&mut self, path: &Path, modified: chrono::DateTime<chrono::Utc>) -> Result<(), Error>;
+    fn new_file(
+        &mut self,
+        path: &Path,
+        modified: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), Error>;
 
     /// Feed entry from the new index
-    fn new_block(&mut self, hash: &HashDigest, size: usize) -> Result<(), Error>;
+    fn new_block(
+        &mut self,
+        hash: &HashDigest,
+        size: usize,
+    ) -> Result<(), Error>;
 
     /// End of files
     fn end_files(&mut self) -> Result<(), Error>;
 
     /// Feed a block that was requested
-    fn feed_block(&mut self, hash: &HashDigest, block: &[u8]) -> Result<(), Error>;
+    fn feed_block(
+        &mut self,
+        hash: &HashDigest,
+        block: &[u8],
+    ) -> Result<(), Error>;
 
     /// Ask which blocks to get next
     fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error>;
@@ -79,7 +91,9 @@ pub trait Source {
     fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error>;
 
     /// Get a block that was previously requested
-    fn get_next_block(&mut self) -> Result<Option<(HashDigest, Vec<u8>)>, Error>;
+    fn get_next_block(
+        &mut self,
+    ) -> Result<Option<(HashDigest, Vec<u8>)>, Error>;
 }
 
 /// Additional methods for `Sink`, through an auto-implemented trait
@@ -102,11 +116,19 @@ impl<R: Sink> SinkExt for R {
 }
 
 impl<R: Sink + ?Sized> Sink for Box<R> {
-    fn new_file(&mut self, path: &Path, modified: chrono::DateTime<chrono::Utc>) -> Result<(), Error> {
+    fn new_file(
+        &mut self,
+        path: &Path,
+        modified: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), Error> {
         (**self).new_file(path, modified)
     }
 
-    fn new_block(&mut self, hash: &HashDigest, size: usize) -> Result<(), Error> {
+    fn new_block(
+        &mut self,
+        hash: &HashDigest,
+        size: usize,
+    ) -> Result<(), Error> {
         (**self).new_block(hash, size)
     }
 
@@ -114,7 +136,11 @@ impl<R: Sink + ?Sized> Sink for Box<R> {
         (**self).end_files()
     }
 
-    fn feed_block(&mut self, hash: &HashDigest, block: &[u8]) -> Result<(), Error> {
+    fn feed_block(
+        &mut self,
+        hash: &HashDigest,
+        block: &[u8],
+    ) -> Result<(), Error> {
         (**self).feed_block(hash, block)
     }
 
@@ -136,7 +162,9 @@ impl<S: Source + ?Sized> Source for Box<S> {
         (**self).request_block(hash)
     }
 
-    fn get_next_block(&mut self) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
+    fn get_next_block(
+        &mut self,
+    ) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
         (**self).get_next_block()
     }
 }
@@ -173,7 +201,10 @@ impl<SW: SourceWrapper + ?Sized> SourceWrapper for Box<SW> {
 ///
 /// This takes care of sending instructions and blocks, and the missing block
 /// requests backwards.
-pub fn do_sync<S: Source, R: Sink>(mut source: S, mut sink: R) -> Result<(), Error> {
+pub fn do_sync<S: Source, R: Sink>(
+    mut source: S,
+    mut sink: R,
+) -> Result<(), Error> {
     let mut instructions = true;
     while instructions || sink.is_missing_blocks()? {
         // Things are done in order so that bandwidth is used in a smart way
@@ -184,8 +215,8 @@ pub fn do_sync<S: Source, R: Sink>(mut source: S, mut sink: R) -> Result<(), Err
         if let Some(hash) = sink.next_requested_block()? {
             // Block requests
             source.request_block(&hash)?; // can block on HTTP receiver side
-        } else if let Some((hash, block)) =
-            source.get_next_block()? // blocks on receiver side
+        } else if let Some((hash, block)) = source.get_next_block()?
+        // blocks on receiver side
         {
             // Block data
             sink.feed_block(&hash, &block)?; // blocks on sender side

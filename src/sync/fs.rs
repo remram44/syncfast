@@ -4,8 +4,8 @@ use cdchunking::{Chunker, ZPAQ};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::collections::hash_map::{Entry, HashMap};
-use std::io::{Seek, SeekFrom, Write};
 use std::fs::{DirBuilder, File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
 use std::ops::Not;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -22,7 +22,10 @@ struct TempFile {
 }
 
 impl TempFile {
-    fn move_to_destination(self, root_dir: &Path) -> Result<(), std::io::Error> {
+    fn move_to_destination(
+        self,
+        root_dir: &Path,
+    ) -> Result<(), std::io::Error> {
         std::fs::rename(self.temp_path, root_dir.join(self.name))
     }
 }
@@ -31,7 +34,7 @@ fn read_block(path: &Path, offset: usize) -> Result<Vec<u8>, Error> {
     let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(offset as u64))?;
     let chunker = Chunker::new(
-        ZPAQ::new(ZPAQ_BITS)
+        ZPAQ::new(ZPAQ_BITS),
     ).max_size(MAX_BLOCK_SIZE);
     let block = chunker.whole_chunks(file).next().unwrap()?;
     Ok(block)
@@ -41,8 +44,7 @@ fn write_block(
     file: &mut File,
     offset: usize,
     block: &[u8],
-) -> Result<(), Error>
-{
+) -> Result<(), Error> {
     // FIXME: Can you seek past the end?
     file.seek(SeekFrom::Start(offset as u64))?;
     file.write_all(block)?;
@@ -100,19 +102,21 @@ impl<'a> Sink for FsSink<'a> {
         &mut self,
         name: &Path,
         modified: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), Error>
-    {
+    ) -> Result<(), Error> {
         info!("Next file: {:?}", name);
 
         self.end_current_file()?;
 
         // Make temp file path, which will be swapped at the end
         let temp_name = {
-            let mut base_name = name.file_name()
-                .ok_or_else(|| Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Invalid file name",
-                )))?
+            let mut base_name = name
+                .file_name()
+                .ok_or_else(|| {
+                    Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Invalid file name",
+                    ))
+                })?
                 .to_os_string();
             base_name.push(".part");
             name.with_file_name(base_name)
@@ -124,7 +128,10 @@ impl<'a> Sink for FsSink<'a> {
         if let Some(dir) = temp_path.parent() {
             DirBuilder::new().recursive(true).create(dir)?;
         }
-        let file = OpenOptions::new().read(true).write(true).create(true)
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
             .open(&temp_path)?;
 
         // Create temp file entry in the database
@@ -151,14 +158,15 @@ impl<'a> Sink for FsSink<'a> {
         &mut self,
         hash: &HashDigest,
         size: usize,
-    ) -> Result<(), Error>
-    {
+    ) -> Result<(), Error> {
         let &mut (ref mut offset, ref mut file) = &mut self.current_file
             .as_mut()
-            .ok_or_else(|| Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Got a block before any file",
-            )))?;
+            .ok_or_else(|| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Got a block before any file",
+                ))
+            })?;
 
         info!(
             "Next block: {} for {:?} offset={}",
@@ -218,8 +226,7 @@ impl<'a> Sink for FsSink<'a> {
         &mut self,
         hash: &HashDigest,
         block: &[u8],
-    ) -> Result<(), Error>
-    {
+    ) -> Result<(), Error> {
         // Write the block to the destinations waiting for it
         if let Some(destinations) = self.waiting_blocks.remove(hash) {
             info!("Got block {}", hash);
@@ -248,10 +255,7 @@ impl<'a> Sink for FsSink<'a> {
         Ok(())
     }
 
-    fn next_requested_block(
-        &mut self,
-    ) -> Result<Option<HashDigest>, Error>
-    {
+    fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error> {
         Ok(self.blocks_to_request.pop_front())
     }
 
@@ -271,7 +275,10 @@ pub struct FsSource<'a> {
 
 impl<'a> FsSource<'a> {
     /// Create a source from the (source) index
-    pub fn new(index: IndexTransaction<'a>, root_dir: &'a Path) -> Result<FsSource<'a>, Error> {
+    pub fn new(
+        index: IndexTransaction<'a>,
+        root_dir: &'a Path,
+    ) -> Result<FsSource<'a>, Error> {
         let files: VecDeque<_> = index.list_files()?.into_iter().collect();
         info!("Source indexed, {} files", files.len());
         Ok(FsSource {
@@ -310,10 +317,14 @@ impl<'a> Source for FsSource<'a> {
         Ok(())
     }
 
-    fn get_next_block(&mut self) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
+    fn get_next_block(
+        &mut self,
+    ) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
         match self.requested_blocks.pop_front() {
             Some(hash) => {
-                if let Some((name, offset, _size)) = self.index.get_block(&hash)? {
+                if let Some((name, offset, _size)) =
+                    self.index.get_block(&hash)?
+                {
                     Ok(Some((
                         hash,
                         read_block(&self.root_dir.join(name), offset)?,
@@ -340,16 +351,16 @@ impl FsSinkWrapper {
         let mut index = Index::open(&path.join(".rrsync.idx"))?;
         {
             let mut tx = index.transaction()?;
-            info!("Indexing destination into {:?}...", path.join(".rrsync.idx"));
+            info!(
+                "Indexing destination into {:?}...",
+                path.join(".rrsync.idx")
+            );
             tx.index_path(path)?;
             tx.remove_missing_files(path)?;
             tx.commit()?;
         }
         let path = path.to_path_buf();
-        Ok(FsSinkWrapper {
-            index,
-            path,
-        })
+        Ok(FsSinkWrapper { index, path })
     }
 }
 
@@ -375,15 +386,15 @@ impl FsSourceWrapper {
             tx.commit()?;
         }
         let path = path.to_path_buf();
-        Ok(FsSourceWrapper {
-            index,
-            path,
-        })
+        Ok(FsSourceWrapper { index, path })
     }
 }
 
 impl SourceWrapper for FsSourceWrapper {
     fn open<'a>(&'a mut self) -> Result<Box<dyn Source + 'a>, Error> {
-        Ok(Box::new(FsSource::new(self.index.transaction()?, &self.path)?))
+        Ok(Box::new(FsSource::new(
+            self.index.transaction()?,
+            &self.path,
+        )?))
     }
 }

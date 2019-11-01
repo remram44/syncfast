@@ -14,8 +14,8 @@ extern crate rusqlite;
 extern crate sha1;
 #[cfg(test)] extern crate tempfile;
 
-pub mod locations;
 mod index;
+pub mod locations;
 pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
@@ -96,26 +96,25 @@ impl std::error::Error for InvalidHashDigest {}
 impl FromSql for HashDigest {
     fn column_result(
         value: rusqlite::types::ValueRef,
-    ) -> Result<HashDigest, FromSqlError>
-    {
-        value
-            .as_str()
-            .and_then(|s| {
-                if s.len() != 40 {
-                    Err(FromSqlError::Other(Box::new(
-                        InvalidHashDigest::WrongSize
-                    )))
-                } else {
-                    let mut bytes = [0u8; 20];
-                    for (i, byte) in (&mut bytes).iter_mut().enumerate() {
-                        *byte = u8::from_str_radix(&s[i*2 .. i*2 + 2], 16)
-                            .map_err(|_| FromSqlError::Other(Box::new(
-                                InvalidHashDigest::InvalidChar
-                            )))?;
-                    }
-                    Ok(HashDigest(bytes))
+    ) -> Result<HashDigest, FromSqlError> {
+        value.as_str().and_then(|s| {
+            if s.len() != 40 {
+                Err(FromSqlError::Other(Box::new(
+                    InvalidHashDigest::WrongSize,
+                )))
+            } else {
+                let mut bytes = [0u8; 20];
+                for (i, byte) in (&mut bytes).iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&s[i * 2 .. i * 2 + 2], 16)
+                        .map_err(|_| {
+                            FromSqlError::Other(Box::new(
+                                InvalidHashDigest::InvalidChar,
+                            ))
+                        })?;
                 }
-            })
+                Ok(HashDigest(bytes))
+            }
+        })
     }
 }
 
@@ -142,9 +141,9 @@ mod tests {
         let digest = HashDigest(sha1.digest().bytes());
         assert_eq!(
             digest.to_sql().unwrap(),
-            ToSqlOutput::Owned(
-                Value::Text("a94a8fe5ccb19ba61c4c0873d391e987982fbbd3".into())
-            ),
+            ToSqlOutput::Owned(Value::Text(
+                "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3".into()
+            )),
         );
     }
 
@@ -155,11 +154,8 @@ mod tests {
         let digest = HashDigest(sha1.digest().bytes());
 
         let hash = <HashDigest as FromSql>::column_result(ValueRef::Text(
-            "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"
+            "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3",
         ));
-        assert_eq!(
-            hash.unwrap(),
-            digest,
-        );
+        assert_eq!(hash.unwrap(), digest);
     }
 }
