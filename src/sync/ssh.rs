@@ -40,7 +40,7 @@ fn recv_errors(stderr: ChildStderr, prefix: &'static str) {
         Ok(())
     })();
     if let Err(e) = r {
-        eprintln!("{},  error reading stderr: {}", prefix, e);
+        error!("{},  error reading stderr: {}", prefix, e);
     }
 }
 
@@ -57,11 +57,11 @@ impl Drop for SshSink {
         match self.child.wait() {
             Ok(s) => {
                 if !s.success() {
-                    eprintln!("SSH to destination exited with {:?}", s);
+                    error!("SSH to destination exited with {:?}", s);
                 }
             }
             Err(e) => {
-                eprintln!(
+                error!(
                     "Error waiting on SSH process to destination: {}",
                     e,
                 );
@@ -187,11 +187,11 @@ impl Drop for SshSource {
         match self.child.wait() {
             Ok(s) => {
                 if !s.success() {
-                    eprintln!("SSH to source exited with {:?}", s);
+                    error!("SSH to source exited with {:?}", s);
                 }
             }
             Err(e) => {
-                eprintln!("Error waiting on SSH process to source: {}", e);
+                error!("Error waiting on SSH process to source: {}", e);
             }
         }
     }
