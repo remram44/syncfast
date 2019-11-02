@@ -293,12 +293,46 @@ impl Source for SshSource {
 
 /// Decode stream from the remote source, parsing instructions and blocks
 fn recv_from_source(
-    stdout: ChildStdout,
+    mut stdout: ChildStdout,
     index_tx: mpsc::Sender<IndexEvent>,
     blocks_tx: mpsc::SyncSender<(HashDigest, Vec<u8>)>,
 ) {
-    // TODO: Read from source stdout, parse instructions and blocks
-    unimplemented!()
+    let mut buffer = [0u8; 4096];
+    let mut size = 0;
+    while size < buffer.len() {
+        // Receive more data
+        let prev_size = size;
+        size += match stdout.read(&mut buffer[size ..]) {
+            Ok(n) => n,
+            Err(e) => {
+                error!("Read from source failed: {}", e);
+                return;
+            }
+        };
+
+        // Find a space
+        if let Some(space_idx) =
+            buffer[prev_size .. size].iter().position(|&b| b == b' ')
+        {
+            let space_idx = space_idx + prev_size;
+
+            // Parse
+            if &buffer[.. space_idx] == b"FILE" {
+                unimplemented!() // TODO: Read FILE from source
+            } else if &buffer[.. space_idx] == b"BLOCK" {
+                unimplemented!() // TODO: Read BLOCK from source
+            } else if &buffer[.. space_idx] == b"END_FILES" {
+                unimplemented!() // TODO: Read END_FILES from source
+            } else if &buffer[.. space_idx] == b"DATA" {
+                unimplemented!() // TODO: Read DATA from source
+            } else {
+                error!("Unknown command from source");
+                return;
+            }
+        }
+    }
+    // Reached buffer size
+    error!("Protocol error from source: line too long");
 }
 
 impl SourceWrapper for SshWrapper {
