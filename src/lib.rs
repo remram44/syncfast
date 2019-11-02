@@ -7,6 +7,8 @@
 //! additions such as caching file signatures to make repeated synchronizations
 //! faster.
 
+#![forbid(unsafe_code)]
+
 extern crate cdchunking;
 extern crate chrono;
 #[macro_use] extern crate log;
