@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
@@ -151,11 +151,62 @@ impl Sink for SshSink {
 
 /// Decode stream from the remote sink, parsing block requests
 fn recv_from_sink(
-    stdout: ChildStdout,
+    mut stdout: ChildStdout,
     tx: mpsc::SyncSender<Option<HashDigest>>,
 ) {
-    // TODO: Read from sink stdout, parse block requests
-    unimplemented!()
+    let mut buffer = [0u8; 4096];
+    let mut size = 0;
+    while size < buffer.len() {
+        // Receive more data
+        let prev_size = size;
+        size += match stdout.read(&mut buffer[size ..]) {
+            Ok(n) => n,
+            Err(e) => {
+                error!("Read from destination failed: {}", e);
+                return;
+            }
+        };
+
+        // Find a space
+        if let Some(space_idx) =
+            buffer[prev_size .. size].iter().position(|&b| b == b' ')
+        {
+            let space_idx = space_idx + prev_size;
+
+            // Parse
+            if &buffer[.. space_idx] == b"REQBLOCK" {
+                // Read the whole command
+                // 45 bytes: 4" 40:" + 40(hash) + 1"\n"
+                if size - space_idx < 45 {
+                    if let Err(e) = stdout.read_exact(
+                        &mut buffer[size .. 45 + size - space_idx],
+                    ) {
+                        error!("Read from destination failed: {}", e);
+                        return;
+                    }
+                }
+                let hash: Option<HashDigest> = std::str::from_utf8(
+                    &buffer[space_idx + 4 .. space_idx + 44],
+                ).ok().and_then(|s| HashDigest::from_hex(s).ok());
+                let hash = match hash {
+                    Some(h) => h,
+                    None => {
+                        error!("Invalid hash from destination");
+                        return;
+                    }
+                };
+                tx.send(Some(hash)).unwrap();
+            } else if &buffer[.. space_idx] == b"END" {
+                tx.send(None).unwrap();
+                return;
+            } else {
+                error!("Unknown command from destination");
+                return;
+            }
+        }
+    }
+    // Reached buffer size
+    error!("Protocol error from destination: line too long");
 }
 
 impl SinkWrapper for SshWrapper {
