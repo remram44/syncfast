@@ -1,4 +1,5 @@
-use std::io::{BufRead, BufReader};
+use std::borrow::Cow;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
@@ -69,13 +70,32 @@ impl Drop for SshSink {
     }
 }
 
+#[cfg(unix)]
+fn path_to_u8(path: &Path) -> Cow<[u8]> {
+    use std::os::unix::ffi::OsStrExt;
+    Cow::Borrowed(path.as_os_str().as_bytes())
+}
+
+#[cfg(not(unix))]
+fn path_to_u8(path: &Path) -> Cow<[u8]> {
+    match path.as_os_str().to_string_lossy() {
+        Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+        Cow::Owned(s) => Cow::Owned(s.into_bytes()),
+    }
+}
+
 impl Sink for SshSink {
     fn new_file(
         &mut self,
         name: &Path,
         modified: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), Error> {
-        unimplemented!() // TODO: Send new_file to destination
+        let stdin = self.child.stdin.as_mut().unwrap();
+        let path = path_to_u8(name);
+        write!(stdin, "FILE {}:", path.len())?;
+        stdin.write_all(&path_to_u8(name))?;
+        writeln!(stdin, " {}", modified.timestamp())?;
+        Ok(())
     }
 
     fn new_block(
@@ -83,11 +103,15 @@ impl Sink for SshSink {
         hash: &HashDigest,
         size: usize,
     ) -> Result<(), Error> {
-        unimplemented!() // TODO: Send new_block to destination
+        let stdin = self.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "BLOCK 40:{} {}", hash, size)?;
+        Ok(())
     }
 
     fn end_files(&mut self) -> Result<(), Error> {
-        unimplemented!() // TODO: Send end_files to destination
+        let stdin = self.child.stdin.as_mut().unwrap();
+        stdin.write_all(b"END_FILES\n")?;
+        Ok(())
     }
 
     fn feed_block(
@@ -95,7 +119,11 @@ impl Sink for SshSink {
         hash: &HashDigest,
         block: &[u8],
     ) -> Result<(), Error> {
-        unimplemented!() // TODO: Send block to destination
+        let stdin = self.child.stdin.as_mut().unwrap();
+        write!(stdin, "DATA 40:{} {}:", hash, block.len())?;
+        stdin.write_all(block)?;
+        stdin.write_all(b"\n")?;
+        Ok(())
     }
 
     fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error> {
@@ -185,7 +213,9 @@ impl Source for SshSource {
     }
 
     fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error> {
-        unimplemented!() // TODO: Send block request
+        let stdin = self.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "REQBLOCK 40:{}", hash)?;
+        Ok(())
     }
 
     fn get_next_block(
@@ -204,7 +234,9 @@ impl Source for SshSource {
     }
 
     fn end(&mut self) -> Result<(), Error> {
-        unimplemented!() // TODO: Specific signal indicating we're done
+        let stdin = self.child.stdin.as_mut().unwrap();
+        stdin.write_all(b"END\n")?;
+        Ok(())
     }
 }
 
