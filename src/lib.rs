@@ -136,12 +136,12 @@ impl fmt::Display for HashDigest {
 #[cfg(test)]
 mod tests {
     use rusqlite::types::{
-        FromSql, FromSqlError, ToSql, ToSqlOutput,
+        FromSql, ToSql, ToSqlOutput,
         Value, ValueRef,
     };
     use sha1::Sha1;
 
-    use super::{HashDigest, InvalidHashDigest};
+    use super::{HashDigest};
 
     #[test]
     fn test_hash_tosql() {

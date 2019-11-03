@@ -142,13 +142,23 @@ fn recv_from_sink(
     mut stdout: ChildStdout,
     tx: mpsc::SyncSender<Option<HashDigest>>,
 ) {
-    let mut reader = SyncReader::new(|buf| stdout.read(buf));
+    let mut reader = SyncReader::new(|buf| {
+        let n = stdout.read(buf)?;
+        if n == 0 {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "End-of-file",
+            ))
+        } else {
+            Ok(n)
+        }
+    });
     let res: Result<(), CommunicationError<std::io::Error>> = (move || {
         loop {
             let cmd = reader.read_to_space()?;
             if &reader[cmd.clone()] == b"REQBLOCK" {
                 let hash = reader.read_str()?;
-                reader.end()?;
+                reader.read_eol()?;
 
                 // Parse hash
                 let hash: HashDigest = std::str::from_utf8(&reader[hash])
@@ -159,7 +169,7 @@ fn recv_from_sink(
 
                 tx.send(Some(hash)).unwrap();
             } else if &reader[cmd] == b"END" {
-                reader.end()?;
+                reader.read_eol()?;
 
                 tx.send(None).unwrap();
                 return Ok(());
@@ -168,6 +178,7 @@ fn recv_from_sink(
                     "Invalid command",
                 ));
             }
+            reader.end();
         }
     })();
     if let Err(e) = res {
@@ -263,7 +274,17 @@ fn recv_from_source(
     index_tx: mpsc::Sender<IndexEvent>,
     blocks_tx: mpsc::SyncSender<(HashDigest, Vec<u8>)>,
 ) {
-    let mut reader = SyncReader::new(|buf| stdout.read(buf));
+    let mut reader = SyncReader::new(|buf| {
+        let n = stdout.read(buf)?;
+        if n == 0 {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "End-of-file",
+            ))
+        } else {
+            Ok(n)
+        }
+    });
     let res: Result<(), CommunicationError<std::io::Error>> = (move || {
         loop {
             let cmd = reader.read_to_space()?;
@@ -271,7 +292,6 @@ fn recv_from_source(
                 let name = reader.read_str()?;
                 reader.read_space()?;
                 let modified = reader.read_to_eol()?;
-                reader.end()?;
 
                 let name = path_from_u8(&reader[name]);
 
@@ -296,7 +316,6 @@ fn recv_from_source(
                 let hash = reader.read_str()?;
                 reader.read_space()?;
                 let size = reader.read_to_eol()?;
-                reader.end()?;
 
                 // Parse hash
                 let hash: HashDigest = std::str::from_utf8(&reader[hash])
@@ -315,14 +334,14 @@ fn recv_from_source(
                 let event = IndexEvent::NewBlock(hash, size);
                 index_tx.send(event).unwrap();
             } else if &reader[cmd.clone()] == b"END_FILES" {
-                reader.end()?;
+                reader.read_eol()?;
 
                 index_tx.send(IndexEvent::End).unwrap();
             } else if &reader[cmd] == b"DATA" {
                 let hash = reader.read_str()?;
                 reader.read_space()?;
                 let block = reader.read_block()?;
-                reader.end()?;
+                reader.read_eol()?;
 
                 // Parse hash
                 let hash: HashDigest = std::str::from_utf8(&reader[hash])
@@ -337,6 +356,7 @@ fn recv_from_source(
                     "Invalid command",
                 ));
             }
+            reader.end();
         }
     })();
     if let Err(e) = res {

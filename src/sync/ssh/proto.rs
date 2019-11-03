@@ -5,7 +5,7 @@ use std::fmt;
 use std::ops::{Deref, Range};
 use std::path::Path;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CommunicationError<E: Error> {
     ProtocolError(&'static str),
     Io(E),
@@ -123,7 +123,7 @@ impl<E, F> SyncReader<E, F>
         }
     }
 
-    /// Read until the end of the line (doesn't consume newline)
+    /// Read until the end of the line (consume the line ending too)
     pub fn read_to_eol(
         &mut self,
     ) -> Result<Range<usize>, CommunicationError<E>> {
@@ -136,7 +136,7 @@ impl<E, F> SyncReader<E, F>
             {
                 let eol_idx = prev_pos + eol_idx;
                 let slice = self.pos .. eol_idx;
-                self.pos = eol_idx;
+                self.pos = eol_idx + 1;
                 // Return slice
                 return Ok(slice);
             } else {
@@ -155,7 +155,7 @@ impl<E, F> SyncReader<E, F>
             // Find a colon
             if let Some(colon_idx) = self.buffer[prev_pos .. self.size]
                 .iter()
-                .position(|&b| b == b' ')
+                .position(|&b| b == b':')
             {
                 // Get the size
                 let colon_idx = prev_pos + colon_idx;
@@ -175,6 +175,7 @@ impl<E, F> SyncReader<E, F>
                 }
 
                 // Return slice
+                self.pos = colon_idx + 1 + size;
                 return Ok(colon_idx + 1 .. colon_idx + 1 + size);
             } else {
                 prev_pos = self.size;
@@ -192,7 +193,7 @@ impl<E, F> SyncReader<E, F>
             // Find a colon
             if let Some(colon_idx) = self.buffer[prev_pos .. self.size]
                 .iter()
-                .position(|&b| b == b' ')
+                .position(|&b| b == b':')
             {
                 // Get the size
                 let colon_idx = prev_pos + colon_idx;
@@ -208,8 +209,9 @@ impl<E, F> SyncReader<E, F>
 
                 // Copy from buffer to vec
                 let mut block = Vec::with_capacity(size);
+                self.pos = self.size.min(colon_idx + 1 + size);
                 block.extend_from_slice(
-                    &self.buffer[colon_idx + 1 .. self.size],
+                    &self.buffer[colon_idx + 1 .. self.pos],
                 );
 
                 // Read more bytes directly into buffer
@@ -231,7 +233,7 @@ impl<E, F> SyncReader<E, F>
 
     /// Consume a space
     pub fn read_space(&mut self) -> Result<(), CommunicationError<E>> {
-        if self.pos + 1 <= self.size {
+        if self.pos + 1 >= self.size {
             self.read_at_least(1)?;
         }
         if self.buffer[self.pos] != b' ' {
@@ -241,24 +243,23 @@ impl<E, F> SyncReader<E, F>
         Ok(())
     }
 
-    /// Consume a line ending and clear what was consumed from the buffer
-    pub fn end(&mut self) -> Result<(), CommunicationError<E>> {
-        // Line ending
-        if self.pos + 1 <= self.size {
+    /// Consume a line ending
+    pub fn read_eol(&mut self) -> Result<(), CommunicationError<E>> {
+        if self.pos + 1 >= self.size {
             self.read_at_least(1)?;
         }
         if self.buffer[self.pos] != b'\n' {
-            return Err(CommunicationError::ProtocolError(
-                "Missing line ending",
-            ));
+            return Err(CommunicationError::ProtocolError("Missing line ending"));
         }
         self.pos += 1;
+        Ok(())
+    }
 
-        // Discard what was consumed
+    /// Clear what was consumed from the buffer
+    pub fn end(&mut self) {
         copy_in_place(&mut self.buffer, self.pos .. self.size, 0);
         self.size -= self.pos;
         self.pos = 0;
-        Ok(())
     }
 }
 
@@ -269,5 +270,155 @@ impl<E, F> Deref for SyncReader<E, F>
 
     fn deref(&self) -> &[u8] {
         &self.buffer[0 .. self.size]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::fmt;
+
+    use super::SyncReader;
+
+    enum FakeRead {
+        Error,
+        Data(&'static str),
+    }
+
+    #[derive(Debug)]
+    enum FakeError {
+        Fake,
+        End,
+    }
+
+    impl fmt::Display for FakeError {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            match self {
+                FakeError::Fake => write!(f, "fake error"),
+                FakeError::End => write!(f, "fake end"),
+            }
+        }
+    }
+
+    impl std::error::Error for FakeError {}
+
+    use self::FakeRead::Error;
+    use self::FakeRead::Data;
+
+    fn fake_reader(
+        reads: Vec<FakeRead>,
+    ) -> impl FnMut(&mut [u8]) -> Result<usize, FakeError> {
+        let mut reads: VecDeque<FakeRead> = reads.into_iter().collect();
+        move |buf| {
+            match reads.pop_front() {
+                None => Err(FakeError::End),
+                Some(Error) => Err(FakeError::Fake),
+                Some(Data(v)) => {
+                    assert!(v.len() <= buf.len());
+                    buf[.. v.len()].clone_from_slice(v.as_bytes());
+                    Ok(v.len())
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_fakereader() {
+        let mut reader = SyncReader::new(fake_reader(
+            vec![],
+        ));
+        match reader.read_str() {
+            Ok(_) => panic!(),
+            Err(e) => assert_eq!(format!("{}", e), "fake end"),
+        }
+
+        let mut reader = SyncReader::new(fake_reader(
+            vec![Data("")],
+        ));
+        match reader.read_str() {
+            Ok(_) => panic!(),
+            Err(e) => assert_eq!(format!("{}", e), "fake end"),
+        }
+
+        let mut reader = SyncReader::new(fake_reader(
+            vec![Data("test"), Data(" more data")],
+        ));
+        assert_eq!(reader.read().unwrap(), 4);
+        assert_eq!(&reader[.. 4], b"test");
+        assert_eq!(reader.read().unwrap(), 10);
+        assert_eq!(&reader[.. 14], b"test more data");
+    }
+
+    #[test]
+    fn test_syncreader() {
+        let mut reader = SyncReader::new(fake_reader(
+            vec![
+                Data("FIL"), Data("E 1"), Data("3:test/f"), Data("ile.txt"),
+                Data(" 1572"), Data("807874\na"),
+            ],
+        ));
+        assert_eq!(reader.pos, 0);
+
+        let cmd = reader.read_to_space().unwrap();
+        assert_eq!(reader.pos, 5);
+        assert_eq!(reader.size, 6);
+        assert_eq!(&reader[cmd], b"FILE");
+
+        let name = reader.read_str().unwrap();
+        assert_eq!(reader.pos, 21);
+        assert_eq!(reader.size, 21);
+        assert_eq!(&reader[name], b"test/file.txt");
+
+        reader.read_space().unwrap();
+        assert_eq!(reader.pos, 22);
+        assert_eq!(reader.size, 26);
+
+        let ts = reader.read_to_eol().unwrap();
+        assert_eq!(reader.pos, 33);
+        assert_eq!(reader.size, 34);
+        assert_eq!(&reader[ts], b"1572807874");
+
+        reader.end();
+        assert_eq!(reader.pos, 0);
+        assert_eq!(reader.size, 1);
+        assert_eq!(reader.buffer[0], b'a');
+    }
+
+    #[test]
+    fn test_syncreader_block_once() {
+        let mut reader = SyncReader::new(fake_reader(
+            vec![Data("TEST "), Data("5:abcde\n")],
+        ));
+        assert_eq!(reader.pos, 0);
+
+        let cmd = reader.read_to_space().unwrap();
+        assert_eq!(reader.pos, 5);
+        assert_eq!(reader.size, 5);
+        assert_eq!(&reader[cmd], b"TEST");
+
+        let block = reader.read_block().unwrap();
+        assert_eq!(reader.pos, 12);
+        assert_eq!(reader.size, 13);
+        assert_eq!(&block, b"abcde");
+        assert_eq!(&reader.buffer[.. 13], b"TEST 5:abcde\n")
+    }
+
+    #[test]
+    fn test_syncreader_block_readagain() {
+        let mut reader = SyncReader::new(fake_reader(
+            vec![Data("TEST "), Data("5:abc"), Data("de"), Data("\n")],
+        ));
+        assert_eq!(reader.pos, 0);
+
+        let cmd = reader.read_to_space().unwrap();
+        assert_eq!(reader.pos, 5);
+        assert_eq!(reader.size, 5);
+        assert_eq!(&reader[cmd], b"TEST");
+
+        let block = reader.read_block().unwrap();
+        assert_eq!(reader.pos, 10);
+        assert_eq!(reader.size, 10);
+        assert_eq!(&block, b"abcde");
+        assert_eq!(&reader.buffer[.. 10], b"TEST 5:abc")
     }
 }
