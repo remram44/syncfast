@@ -165,34 +165,36 @@ impl<R: Read> SyncReader<R> {
         SyncReader { reader, buffer: [0u8; 4096], pos: 0, size: 0 }
     }
 
-    // Read some bytes more
+    /// Read some more bytes
     fn read(&mut self) -> std::io::Result<usize> {
         let bytes = self.reader.read(&mut self.buffer[self.size ..])?;
         self.size += bytes;
         Ok(bytes)
     }
 
-    // Read an exact amount of bytes more
-    fn read_exact(&mut self, bytes: usize) -> std::io::Result<()> {
-        if self.size + bytes > 4096 {
+    /// Read more bytes we need
+    fn read_at_least(&mut self, bytes: usize) -> std::io::Result<()> {
+        let target = self.size + bytes;
+        if target > 4096 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Command too long",
             ));
         }
-        self.reader.read_exact(
-            &mut self.buffer[self.size .. self.size + bytes],
-        )
+        while self.size < target {
+            self.read()?;
+        }
+        Ok(())
     }
 
+    /// Read until the next space
     fn read_to_space(&mut self) -> std::io::Result<Range<usize>> {
         let mut prev_pos = self.pos; // No space until here
         loop {
             // Find a space
-            if let Some(space_idx) =
-                self.buffer[prev_pos .. self.size]
-                    .iter()
-                    .position(|&b| b == b' ')
+            if let Some(space_idx) = self.buffer[prev_pos .. self.size]
+                .iter()
+                .position(|&b| b == b' ')
             {
                 let space_idx = prev_pos + space_idx;
                 let slice = self.pos .. space_idx;
@@ -208,12 +210,80 @@ impl<R: Read> SyncReader<R> {
         }
     }
 
+    /// Read a string prefixed by its length and a colon
     fn read_str(&mut self) -> std::io::Result<Range<usize>> {
-        unimplemented!()
+        let mut prev_pos = self.pos; // No colon until here
+        loop {
+            // Find a colon
+            if let Some(colon_idx) = self.buffer[prev_pos .. self.size]
+                .iter()
+                .position(|&b| b == b' ')
+            {
+                // Get the size
+                let colon_idx = prev_pos + colon_idx;
+                let size = &self.buffer[self.pos .. colon_idx];
+
+                // Parse it to a number
+                let size: Option<usize> = std::str::from_utf8(size)
+                    .ok()
+                    .and_then(|s| s.parse().ok());
+                let size = match size {
+                    Some(i) => i,
+                    None => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "Invalid string size",
+                        ));
+                    }
+                };
+
+                // Read the string
+                if colon_idx + 1 + size > self.size {
+                    self.read_at_least(colon_idx + 1 + size - self.size)?;
+                }
+
+                // Return slice
+                return Ok(colon_idx + 1 .. colon_idx + 1 + size);
+            } else {
+                prev_pos = self.size;
+            }
+        }
     }
 
+    /// Consume a space
+    fn read_space(&mut self) -> std::io::Result<()> {
+        if self.pos + 1 <= self.size {
+            self.read_at_least(1)?;
+        }
+        if self.buffer[self.pos] != b' ' {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Missing space",
+            ));
+        }
+        self.pos += 1;
+        Ok(())
+    }
+
+    /// Consume a line ending and clear what was consumed from the buffer
     fn end(&mut self) -> std::io::Result<()> {
-        unimplemented!()
+        // Line ending
+        if self.pos + 1 <= self.size {
+            self.read_at_least(1)?;
+        }
+        if self.buffer[self.pos] != b'\n' {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Missing line ending",
+            ));
+        }
+        self.pos += 1;
+
+        // Discard what was consumed
+        self.buffer.copy_within(self.pos .. self.size, 0);
+        self.size -= self.pos;
+        self.pos = 0;
+        Ok(())
     }
 }
 
@@ -234,76 +304,33 @@ fn recv_from_sink(
     let res: std::io::Result<()> = (move || {
         loop {
             let cmd = reader.read_to_space()?;
-            if &reader[cmd] == b"REQBLOCK" {
-                // Read the hash
+            if &reader[cmd.clone()] == b"REQBLOCK" {
                 let hash = reader.read_str()?;
-
-                // Read the end and reset
                 reader.end()?;
+
+                let hash: HashDigest = std::str::from_utf8(&reader[hash])
+                    .ok().and_then(|s| HashDigest::from_hex(s).ok())
+                    .ok_or(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Missing space",
+                    ))?;
+                tx.send(Some(hash)).unwrap();
+            } else if &reader[cmd] == b"END" {
+                reader.end()?;
+
+                tx.send(None).unwrap();
+                return Ok(());
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Invalid command",
+                ));
             }
         }
-        Ok(())
     })();
     if let Err(e) = res {
         error!("Error reading from destination: {}", e);
     }
-
-
-    /*
-    let mut buffer = [0u8; 4096];
-    let mut size = 0;
-    while size < buffer.len() {
-        // Receive more data
-        let prev_size = size;
-        size += match stdout.read(&mut buffer[size ..]) {
-            Ok(n) => n,
-            Err(e) => {
-                error!("Read from destination failed: {}", e);
-                return;
-            }
-        };
-
-        // Find a space
-        if let Some(space_idx) =
-            buffer[prev_size .. size].iter().position(|&b| b == b' ')
-        {
-            let space_idx = space_idx + prev_size;
-
-            // Parse
-            if &buffer[.. space_idx] == b"REQBLOCK" {
-                // Read the whole command
-                // 45 bytes: 4" 40:" + 40(hash) + 1"\n"
-                if size - space_idx < 45 {
-                    if let Err(e) = stdout.read_exact(
-                        &mut buffer[size .. 45 + size - space_idx],
-                    ) {
-                        error!("Read from destination failed: {}", e);
-                        return;
-                    }
-                }
-                let hash: Option<HashDigest> = std::str::from_utf8(
-                    &buffer[space_idx + 4 .. space_idx + 44],
-                ).ok().and_then(|s| HashDigest::from_hex(s).ok());
-                let hash = match hash {
-                    Some(h) => h,
-                    None => {
-                        error!("Invalid hash from destination");
-                        return;
-                    }
-                };
-                tx.send(Some(hash)).unwrap();
-            } else if &buffer[.. space_idx] == b"END" {
-                tx.send(None).unwrap();
-                return;
-            } else {
-                error!("Unknown command from destination");
-                return;
-            }
-        }
-    }
-    // Reached buffer size
-    error!("Protocol error from destination: line too long");
-    */
 }
 
 impl SinkWrapper for SshWrapper {
@@ -394,42 +421,7 @@ fn recv_from_source(
     index_tx: mpsc::Sender<IndexEvent>,
     blocks_tx: mpsc::SyncSender<(HashDigest, Vec<u8>)>,
 ) {
-    let mut buffer = [0u8; 4096];
-    let mut size = 0;
-    while size < buffer.len() {
-        // Receive more data
-        let prev_size = size;
-        size += match stdout.read(&mut buffer[size ..]) {
-            Ok(n) => n,
-            Err(e) => {
-                error!("Read from source failed: {}", e);
-                return;
-            }
-        };
-
-        // Find a space
-        if let Some(space_idx) =
-            buffer[prev_size .. size].iter().position(|&b| b == b' ')
-        {
-            let space_idx = space_idx + prev_size;
-
-            // Parse
-            if &buffer[.. space_idx] == b"FILE" {
-                unimplemented!() // TODO: Read FILE from source
-            } else if &buffer[.. space_idx] == b"BLOCK" {
-                unimplemented!() // TODO: Read BLOCK from source
-            } else if &buffer[.. space_idx] == b"END_FILES" {
-                unimplemented!() // TODO: Read END_FILES from source
-            } else if &buffer[.. space_idx] == b"DATA" {
-                unimplemented!() // TODO: Read DATA from source
-            } else {
-                error!("Unknown command from source");
-                return;
-            }
-        }
-    }
-    // Reached buffer size
-    error!("Protocol error from source: line too long");
+    unimplemented!() // TODO
 }
 
 impl SourceWrapper for SshWrapper {
