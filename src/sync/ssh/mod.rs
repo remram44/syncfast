@@ -1,6 +1,6 @@
-use std::borrow::Cow;
+mod proto;
+
 use std::io::{BufRead, BufReader, Read, Write};
-use std::ops::{Deref, Range};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
@@ -9,6 +9,7 @@ use std::thread;
 use crate::{Error, HashDigest};
 use crate::locations::SshLocation;
 use crate::sync::{IndexEvent, Sink, SinkWrapper, Source, SourceWrapper};
+use self::proto::{CommunicationError, SyncReader, path_to_u8};
 
 /// The wrapper for SSH endpoints
 pub struct SshWrapper(pub SshLocation);
@@ -68,20 +69,6 @@ impl Drop for SshSink {
                 );
             }
         }
-    }
-}
-
-#[cfg(unix)]
-fn path_to_u8(path: &Path) -> Cow<[u8]> {
-    use std::os::unix::ffi::OsStrExt;
-    Cow::Borrowed(path.as_os_str().as_bytes())
-}
-
-#[cfg(not(unix))]
-fn path_to_u8(path: &Path) -> Cow<[u8]> {
-    match path.as_os_str().to_string_lossy() {
-        Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
-        Cow::Owned(s) => Cow::Owned(s.into_bytes()),
     }
 }
 
@@ -150,158 +137,13 @@ impl Sink for SshSink {
     }
 }
 
-struct SyncReader<R: Read> {
-    /// Wrapped reader
-    reader: R,
-    buffer: [u8; 4096],
-    /// How much we have consumed of the buffer
-    pos: usize,
-    /// How many bytes we read to the buffer
-    size: usize,
-}
-
-impl<R: Read> SyncReader<R> {
-    fn new(reader: R) -> SyncReader<R> {
-        SyncReader { reader, buffer: [0u8; 4096], pos: 0, size: 0 }
-    }
-
-    /// Read some more bytes
-    fn read(&mut self) -> std::io::Result<usize> {
-        let bytes = self.reader.read(&mut self.buffer[self.size ..])?;
-        self.size += bytes;
-        Ok(bytes)
-    }
-
-    /// Read more bytes we need
-    fn read_at_least(&mut self, bytes: usize) -> std::io::Result<()> {
-        let target = self.size + bytes;
-        if target > 4096 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Command too long",
-            ));
-        }
-        while self.size < target {
-            self.read()?;
-        }
-        Ok(())
-    }
-
-    /// Read until the next space
-    fn read_to_space(&mut self) -> std::io::Result<Range<usize>> {
-        let mut prev_pos = self.pos; // No space until here
-        loop {
-            // Find a space
-            if let Some(space_idx) = self.buffer[prev_pos .. self.size]
-                .iter()
-                .position(|&b| b == b' ')
-            {
-                let space_idx = prev_pos + space_idx;
-                let slice = self.pos .. space_idx;
-                self.pos = space_idx + 1;
-                // Return slice
-                return Ok(slice);
-            } else {
-                prev_pos = self.size;
-            }
-
-            // Read more bytes
-            self.read()?;
-        }
-    }
-
-    /// Read a string prefixed by its length and a colon
-    fn read_str(&mut self) -> std::io::Result<Range<usize>> {
-        let mut prev_pos = self.pos; // No colon until here
-        loop {
-            // Find a colon
-            if let Some(colon_idx) = self.buffer[prev_pos .. self.size]
-                .iter()
-                .position(|&b| b == b' ')
-            {
-                // Get the size
-                let colon_idx = prev_pos + colon_idx;
-                let size = &self.buffer[self.pos .. colon_idx];
-
-                // Parse it to a number
-                let size: Option<usize> = std::str::from_utf8(size)
-                    .ok()
-                    .and_then(|s| s.parse().ok());
-                let size = match size {
-                    Some(i) => i,
-                    None => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "Invalid string size",
-                        ));
-                    }
-                };
-
-                // Read the string
-                if colon_idx + 1 + size > self.size {
-                    self.read_at_least(colon_idx + 1 + size - self.size)?;
-                }
-
-                // Return slice
-                return Ok(colon_idx + 1 .. colon_idx + 1 + size);
-            } else {
-                prev_pos = self.size;
-            }
-        }
-    }
-
-    /// Consume a space
-    fn read_space(&mut self) -> std::io::Result<()> {
-        if self.pos + 1 <= self.size {
-            self.read_at_least(1)?;
-        }
-        if self.buffer[self.pos] != b' ' {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Missing space",
-            ));
-        }
-        self.pos += 1;
-        Ok(())
-    }
-
-    /// Consume a line ending and clear what was consumed from the buffer
-    fn end(&mut self) -> std::io::Result<()> {
-        // Line ending
-        if self.pos + 1 <= self.size {
-            self.read_at_least(1)?;
-        }
-        if self.buffer[self.pos] != b'\n' {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Missing line ending",
-            ));
-        }
-        self.pos += 1;
-
-        // Discard what was consumed
-        self.buffer.copy_within(self.pos .. self.size, 0);
-        self.size -= self.pos;
-        self.pos = 0;
-        Ok(())
-    }
-}
-
-impl<R: Read> Deref for SyncReader<R> {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        &self.buffer[0 .. self.size]
-    }
-}
-
 /// Decode stream from the remote sink, parsing block requests
 fn recv_from_sink(
-    stdout: ChildStdout,
+    mut stdout: ChildStdout,
     tx: mpsc::SyncSender<Option<HashDigest>>,
 ) {
-    let mut reader = SyncReader::new(stdout);
-    let res: std::io::Result<()> = (move || {
+    let mut reader = SyncReader::new(|buf| stdout.read(buf));
+    let res: Result<(), CommunicationError<std::io::Error>> = (move || {
         loop {
             let cmd = reader.read_to_space()?;
             if &reader[cmd.clone()] == b"REQBLOCK" {
@@ -310,8 +152,7 @@ fn recv_from_sink(
 
                 let hash: HashDigest = std::str::from_utf8(&reader[hash])
                     .ok().and_then(|s| HashDigest::from_hex(s).ok())
-                    .ok_or(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    .ok_or(CommunicationError::ProtocolError(
                         "Missing space",
                     ))?;
                 tx.send(Some(hash)).unwrap();
@@ -321,8 +162,7 @@ fn recv_from_sink(
                 tx.send(None).unwrap();
                 return Ok(());
             } else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(CommunicationError::ProtocolError(
                     "Invalid command",
                 ));
             }
@@ -421,7 +261,28 @@ fn recv_from_source(
     index_tx: mpsc::Sender<IndexEvent>,
     blocks_tx: mpsc::SyncSender<(HashDigest, Vec<u8>)>,
 ) {
-    unimplemented!() // TODO
+    let mut reader = SyncReader::new(|buf| stdout.read(buf));
+    let res: Result<(), CommunicationError<std::io::Error>> = (move || {
+        loop {
+            let cmd = reader.read_to_space()?;
+            if &reader[cmd.clone()] == b"FILE" {
+                // TODO
+            } else if &reader[cmd.clone()] == b"BLOCK" {
+                // TODO
+            } else if &reader[cmd.clone()] == b"END_FILES" {
+                // TODO
+            } else if &reader[cmd] == b"DATA" {
+                // TODO
+            } else {
+                return Err(CommunicationError::ProtocolError(
+                    "Invalid command",
+                ));
+            }
+        }
+    })();
+    if let Err(e) = res {
+        error!("Error reading from source: {}", e);
+    }
 }
 
 impl SourceWrapper for SshWrapper {
