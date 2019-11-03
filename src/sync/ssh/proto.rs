@@ -1,3 +1,4 @@
+use copy_in_place::copy_in_place;
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
@@ -254,7 +255,7 @@ impl<E, F> SyncReader<E, F>
         self.pos += 1;
 
         // Discard what was consumed
-        self.buffer.copy_within(self.pos .. self.size, 0);
+        copy_in_place(&mut self.buffer, self.pos .. self.size, 0);
         self.size -= self.pos;
         self.pos = 0;
         Ok(())

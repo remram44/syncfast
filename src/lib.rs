@@ -11,6 +11,7 @@
 
 extern crate cdchunking;
 extern crate chrono;
+extern crate copy_in_place;
 #[macro_use] extern crate log;
 extern crate rusqlite;
 extern crate sha1;
