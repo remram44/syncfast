@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::ops::{Deref, Range};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
@@ -149,11 +150,106 @@ impl Sink for SshSink {
     }
 }
 
+struct SyncReader<R: Read> {
+    /// Wrapped reader
+    reader: R,
+    buffer: [u8; 4096],
+    /// How much we have consumed of the buffer
+    pos: usize,
+    /// How many bytes we read to the buffer
+    size: usize,
+}
+
+impl<R: Read> SyncReader<R> {
+    fn new(reader: R) -> SyncReader<R> {
+        SyncReader { reader, buffer: [0u8; 4096], pos: 0, size: 0 }
+    }
+
+    // Read some bytes more
+    fn read(&mut self) -> std::io::Result<usize> {
+        let bytes = self.reader.read(&mut self.buffer[self.size ..])?;
+        self.size += bytes;
+        Ok(bytes)
+    }
+
+    // Read an exact amount of bytes more
+    fn read_exact(&mut self, bytes: usize) -> std::io::Result<()> {
+        if self.size + bytes > 4096 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Command too long",
+            ));
+        }
+        self.reader.read_exact(
+            &mut self.buffer[self.size .. self.size + bytes],
+        )
+    }
+
+    fn read_to_space(&mut self) -> std::io::Result<Range<usize>> {
+        let mut prev_pos = self.pos; // No space until here
+        loop {
+            // Find a space
+            if let Some(space_idx) =
+                self.buffer[prev_pos .. self.size]
+                    .iter()
+                    .position(|&b| b == b' ')
+            {
+                let space_idx = prev_pos + space_idx;
+                let slice = self.pos .. space_idx;
+                self.pos = space_idx + 1;
+                // Return slice
+                return Ok(slice);
+            } else {
+                prev_pos = self.size;
+            }
+
+            // Read more bytes
+            self.read()?;
+        }
+    }
+
+    fn read_str(&mut self) -> std::io::Result<Range<usize>> {
+        unimplemented!()
+    }
+
+    fn end(&mut self) -> std::io::Result<()> {
+        unimplemented!()
+    }
+}
+
+impl<R: Read> Deref for SyncReader<R> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.buffer[0 .. self.size]
+    }
+}
+
 /// Decode stream from the remote sink, parsing block requests
 fn recv_from_sink(
-    mut stdout: ChildStdout,
+    stdout: ChildStdout,
     tx: mpsc::SyncSender<Option<HashDigest>>,
 ) {
+    let mut reader = SyncReader::new(stdout);
+    let res: std::io::Result<()> = (move || {
+        loop {
+            let cmd = reader.read_to_space()?;
+            if &reader[cmd] == b"REQBLOCK" {
+                // Read the hash
+                let hash = reader.read_str()?;
+
+                // Read the end and reset
+                reader.end()?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = res {
+        error!("Error reading from destination: {}", e);
+    }
+
+
+    /*
     let mut buffer = [0u8; 4096];
     let mut size = 0;
     while size < buffer.len() {
@@ -207,6 +303,7 @@ fn recv_from_sink(
     }
     // Reached buffer size
     error!("Protocol error from destination: line too long");
+    */
 }
 
 impl SinkWrapper for SshWrapper {
