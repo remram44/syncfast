@@ -9,7 +9,7 @@ use std::thread;
 use crate::{Error, HashDigest};
 use crate::locations::SshLocation;
 use crate::sync::{IndexEvent, Sink, SinkWrapper, Source, SourceWrapper};
-use self::proto::{CommunicationError, SyncReader, path_to_u8};
+use self::proto::{CommunicationError, SyncReader, path_from_u8, path_to_u8};
 
 /// The wrapper for SSH endpoints
 pub struct SshWrapper(pub SshLocation);
@@ -150,11 +150,13 @@ fn recv_from_sink(
                 let hash = reader.read_str()?;
                 reader.end()?;
 
+                // Parse hash
                 let hash: HashDigest = std::str::from_utf8(&reader[hash])
                     .ok().and_then(|s| HashDigest::from_hex(s).ok())
                     .ok_or(CommunicationError::ProtocolError(
-                        "Missing space",
+                        "Invalid hash",
                     ))?;
+
                 tx.send(Some(hash)).unwrap();
             } else if &reader[cmd] == b"END" {
                 reader.end()?;
@@ -266,13 +268,70 @@ fn recv_from_source(
         loop {
             let cmd = reader.read_to_space()?;
             if &reader[cmd.clone()] == b"FILE" {
-                // TODO
+                let name = reader.read_str()?;
+                reader.read_space()?;
+                let modified = reader.read_to_eol()?;
+                reader.end()?;
+
+                let name = path_from_u8(&reader[name]);
+
+                // Parse datetime
+                let modified: i64 = std::str::from_utf8(&reader[modified])
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or(CommunicationError::ProtocolError(
+                        "Invalid timestamp",
+                    ))?;
+                let modified = chrono::DateTime::<chrono::Utc>::from_utc(
+                    chrono::NaiveDateTime::from_timestamp(modified, 0),
+                    chrono::Utc,
+                );
+
+                let event = IndexEvent::NewFile(
+                    name.into_owned(),
+                    modified,
+                );
+                index_tx.send(event).unwrap();
             } else if &reader[cmd.clone()] == b"BLOCK" {
-                // TODO
+                let hash = reader.read_str()?;
+                reader.read_space()?;
+                let size = reader.read_to_eol()?;
+                reader.end()?;
+
+                // Parse hash
+                let hash: HashDigest = std::str::from_utf8(&reader[hash])
+                    .ok().and_then(|s| HashDigest::from_hex(s).ok())
+                    .ok_or(CommunicationError::ProtocolError(
+                        "Invalid hash",
+                    ))?;
+
+                // Parse size
+                let size = std::str::from_utf8(&reader[size])
+                    .ok().and_then(|s| s.parse().ok())
+                    .ok_or(CommunicationError::ProtocolError(
+                        "Invalid size",
+                    ))?;
+
+                let event = IndexEvent::NewBlock(hash, size);
+                index_tx.send(event).unwrap();
             } else if &reader[cmd.clone()] == b"END_FILES" {
-                // TODO
+                reader.end()?;
+
+                index_tx.send(IndexEvent::End).unwrap();
             } else if &reader[cmd] == b"DATA" {
-                // TODO
+                let hash = reader.read_str()?;
+                reader.read_space()?;
+                let block = reader.read_block()?;
+                reader.end()?;
+
+                // Parse hash
+                let hash: HashDigest = std::str::from_utf8(&reader[hash])
+                    .ok().and_then(|s| HashDigest::from_hex(s).ok())
+                    .ok_or(CommunicationError::ProtocolError(
+                        "Invalid hash",
+                    ))?;
+
+                blocks_tx.send((hash, block)).unwrap();
             } else {
                 return Err(CommunicationError::ProtocolError(
                     "Invalid command",

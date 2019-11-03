@@ -41,6 +41,21 @@ pub fn path_to_u8(path: &Path) -> Cow<[u8]> {
     }
 }
 
+#[cfg(unix)]
+pub fn path_from_u8(path: &[u8]) -> Cow<Path> {
+    use std::os::unix::ffi::OsStrExt;
+    let osstr: &std::ffi::OsStr = OsStrExt::from_bytes(path);
+    Cow::Borrowed(Path::new(osstr))
+}
+
+#[cfg(not(unix))]
+pub fn path_from_u8(path: &[u8]) -> Cow<Path> {
+    match String::from_utf8_lossy(path) {
+        Cow::Borrowed(s) => Cow::Borrowed(Path::new(s)),
+        Cow::Owned(s) => Cow::Owned(s.into()),
+    }
+}
+
 pub struct SyncReader<E, F>
     where E: Error, F: FnMut(&mut [u8]) -> Result<usize, E>
 {
@@ -107,6 +122,31 @@ impl<E, F> SyncReader<E, F>
         }
     }
 
+    /// Read until the end of the line (doesn't consume newline)
+    pub fn read_to_eol(
+        &mut self,
+    ) -> Result<Range<usize>, CommunicationError<E>> {
+        let mut prev_pos = self.pos; // No newline until here
+        loop {
+            // Find a newline
+            if let Some(eol_idx) = self.buffer[prev_pos .. self.size]
+                .iter()
+                .position(|&b| b == b'\n')
+            {
+                let eol_idx = prev_pos + eol_idx;
+                let slice = self.pos .. eol_idx;
+                self.pos = eol_idx;
+                // Return slice
+                return Ok(slice);
+            } else {
+                prev_pos = self.size;
+            }
+
+            // Read more bytes
+            self.read()?;
+        }
+    }
+
     /// Read a string prefixed by its length and a colon
     pub fn read_str(&mut self) -> Result<Range<usize>, CommunicationError<E>> {
         let mut prev_pos = self.pos; // No colon until here
@@ -121,17 +161,12 @@ impl<E, F> SyncReader<E, F>
                 let size = &self.buffer[self.pos .. colon_idx];
 
                 // Parse it to a number
-                let size: Option<usize> = std::str::from_utf8(size)
+                let size: usize = std::str::from_utf8(size)
                     .ok()
-                    .and_then(|s| s.parse().ok());
-                let size = match size {
-                    Some(i) => i,
-                    None => {
-                        return Err(CommunicationError::ProtocolError(
-                            "Invalid string size",
-                        ));
-                    }
-                };
+                    .and_then(|s| s.parse().ok())
+                    .ok_or(CommunicationError::ProtocolError(
+                        "Invalid string size",
+                    ))?;
 
                 // Read the string
                 if colon_idx + 1 + size > self.size {
@@ -143,6 +178,53 @@ impl<E, F> SyncReader<E, F>
             } else {
                 prev_pos = self.size;
             }
+
+            // Read more bytes
+            self.read()?;
+        }
+    }
+
+    /// Read a long string to a vec
+    pub fn read_block(&mut self) -> Result<Vec<u8>, CommunicationError<E>> {
+        let mut prev_pos = self.pos; // No colon until here
+        loop {
+            // Find a colon
+            if let Some(colon_idx) = self.buffer[prev_pos .. self.size]
+                .iter()
+                .position(|&b| b == b' ')
+            {
+                // Get the size
+                let colon_idx = prev_pos + colon_idx;
+                let size = &self.buffer[self.pos .. colon_idx];
+
+                // Parse it to a number
+                let size: usize = std::str::from_utf8(size)
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or(CommunicationError::ProtocolError(
+                        "Invalid string size",
+                    ))?;
+
+                // Copy from buffer to vec
+                let mut block = Vec::with_capacity(size);
+                block.extend_from_slice(
+                    &self.buffer[colon_idx + 1 .. self.size],
+                );
+
+                // Read more bytes directly into buffer
+                let mut len = block.len();
+                block.resize(size, 0);
+                while len < size {
+                    len += (self.reader)(&mut block[len .. ])?;
+                }
+
+                return Ok(block);
+            } else {
+                prev_pos = self.size;
+            }
+
+            // Read more bytes
+            self.read()?;
         }
     }
 
