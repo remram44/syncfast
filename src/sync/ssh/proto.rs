@@ -157,21 +157,24 @@ impl<E, F> SyncReader<E, F>
                 .iter()
                 .position(|&b| b == b':')
             {
-                // Get the size
                 let colon_idx = prev_pos + colon_idx;
-                let size = &self.buffer[self.pos .. colon_idx];
+                let size: usize = {
+                    // Get the size
+                    let slice = &self.buffer[self.pos .. colon_idx];
 
-                // Parse it to a number
-                let size: usize = std::str::from_utf8(size)
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .ok_or(CommunicationError::ProtocolError(
-                        "Invalid string size",
-                    ))?;
+                    // Parse it to a number
+                    std::str::from_utf8(slice)
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or(CommunicationError::ProtocolError(
+                            "Invalid string size",
+                        ))?
+                };
 
                 // Read the string
                 if colon_idx + 1 + size > self.size {
-                    self.read_at_least(colon_idx + 1 + size - self.size)?;
+                    let bytes = colon_idx + 1 + size - self.size; 
+                    self.read_at_least(bytes)?;
                 }
 
                 // Return slice
