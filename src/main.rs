@@ -9,6 +9,7 @@ use std::path::Path;
 use rrsync::{Error, Index};
 use rrsync::locations::Location;
 use rrsync::sync::do_sync;
+use rrsync::sync::ssh::{SshSink, SshSource};
 
 /// Command-line entrypoint
 fn main() {
@@ -54,7 +55,7 @@ fn main() {
                 ),
         )
         .subcommand(
-            SubCommand::with_name("remote-recv")
+            SubCommand::with_name("piped-sink")
                 .about(
                     "Internal - process started on the remote to receive \
                      files. Expects stdin and stdout to be connected to the \
@@ -67,7 +68,7 @@ fn main() {
                 ),
         )
         .subcommand(
-            SubCommand::with_name("remote-send")
+            SubCommand::with_name("piped-source")
                 .about(
                     "Internal - process started on the remote to send \
                      files. Expects stdin and stdout to be connected to \
@@ -181,8 +182,39 @@ fn main() {
                 };
             do_sync(source_obj, sink_obj)
         }
+        Some("piped-sink") => {
+            let s_matches = matches.subcommand_matches("piped-sink").unwrap();
+            let dest = s_matches.value_of_os("destination").unwrap();
+
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            let source_obj = SshSource::piped(
+                stdout,
+                stdin,
+            );
+            let dest = Location::Local(dest.into());
+
+            let mut sink_wrapper: Box<dyn rrsync::sync::SinkWrapper> =
+                match dest.open_sink() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("Failed to open destination: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+            let sink_obj: Box<dyn rrsync::sync::Sink> =
+                match sink_wrapper.open() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("Failed to prepare destination: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+            do_sync(source_obj, sink_obj)
+        }
         _ => {
             cli.print_help().expect("Can't print help");
+            println!("");
             std::process::exit(2);
         }
     };

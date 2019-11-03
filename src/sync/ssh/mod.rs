@@ -2,7 +2,7 @@ mod proto;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
@@ -21,18 +21,18 @@ fn run_ssh(ssh: &SshLocation, args: &[&str]) -> std::io::Result<Child> {
         Some(user) => cmd.arg(format!("{}@{}", user, ssh.host)),
         None => cmd.arg(&ssh.host),
     };
-    let child = cmd
-        .arg("rrsync")
+    cmd
+        .arg("/rrsync/debug/rrsync")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    Ok(child)
+        .stderr(Stdio::piped());
+    info!("{:?}", cmd);
+    cmd.spawn()
 }
 
 /// Read from stderr, print it here with a prefix
-fn recv_errors(stderr: ChildStderr, prefix: &'static str) {
+fn recv_errors<R: Read>(stderr: R, prefix: &'static str) {
     let mut stderr = BufReader::new(stderr);
     let mut buffer = String::new();
     let r: std::io::Result<()> = (|| {
@@ -47,42 +47,59 @@ fn recv_errors(stderr: ChildStderr, prefix: &'static str) {
 }
 
 /// Sink writing to a remote machine via SSH
-pub struct SshSink {
-    child: Child,
+pub struct SshSink<W: Write> {
+    child: Option<Child>,
+    writer: W,
     block_reqs_rx: mpsc::Receiver<Option<HashDigest>>,
     done: bool,
 }
 
-impl Drop for SshSink {
+impl<W: Write> Drop for SshSink<W> {
     fn drop(&mut self) {
-        // Join SSH process
-        match self.child.wait() {
-            Ok(s) => {
-                if !s.success() {
-                    error!("SSH to destination exited with {:?}", s);
+        if let Some(mut child) = self.child.take() {
+            // Join SSH process
+            match child.wait() {
+                Ok(s) => {
+                    if !s.success() {
+                        error!("SSH to destination exited with {:?}", s);
+                    }
                 }
-            }
-            Err(e) => {
-                error!(
-                    "Error waiting on SSH process to destination: {}",
-                    e,
-                );
+                Err(e) => {
+                    error!(
+                        "Error waiting on SSH process to destination: {}",
+                        e,
+                    );
+                }
             }
         }
     }
 }
 
-impl Sink for SshSink {
+impl<W: Write> SshSink<W> {
+    pub fn piped<R>(stdin: W, stdout: R) -> SshSink<W>
+        where R: Read + Send + 'static
+    {
+        let (block_reqs_tx, block_reqs_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || recv_from_sink(stdout, block_reqs_tx));
+        SshSink {
+            child: None,
+            writer: stdin,
+            block_reqs_rx,
+            done: false,
+        }
+    }
+}
+
+impl<W: Write> Sink for SshSink<W> {
     fn new_file(
         &mut self,
         name: &Path,
         modified: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), Error> {
-        let stdin = self.child.stdin.as_mut().unwrap();
         let path = path_to_u8(name);
-        write!(stdin, "FILE {}:", path.len())?;
-        stdin.write_all(&path_to_u8(name))?;
-        writeln!(stdin, " {}", modified.timestamp())?;
+        write!(self.writer, "FILE {}:", path.len())?;
+        self.writer.write_all(&path_to_u8(name))?;
+        writeln!(self.writer, " {}", modified.timestamp())?;
         Ok(())
     }
 
@@ -91,14 +108,12 @@ impl Sink for SshSink {
         hash: &HashDigest,
         size: usize,
     ) -> Result<(), Error> {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        writeln!(stdin, "BLOCK 40:{} {}", hash, size)?;
+        writeln!(self.writer, "BLOCK 40:{} {}", hash, size)?;
         Ok(())
     }
 
     fn end_files(&mut self) -> Result<(), Error> {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        stdin.write_all(b"END_FILES\n")?;
+        self.writer.write_all(b"END_FILES\n")?;
         Ok(())
     }
 
@@ -107,10 +122,9 @@ impl Sink for SshSink {
         hash: &HashDigest,
         block: &[u8],
     ) -> Result<(), Error> {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        write!(stdin, "DATA 40:{} {}:", hash, block.len())?;
-        stdin.write_all(block)?;
-        stdin.write_all(b"\n")?;
+        write!(self.writer, "DATA 40:{} {}:", hash, block.len())?;
+        self.writer.write_all(block)?;
+        self.writer.write_all(b"\n")?;
         Ok(())
     }
 
@@ -138,12 +152,12 @@ impl Sink for SshSink {
 }
 
 /// Decode stream from the remote sink, parsing block requests
-fn recv_from_sink(
-    mut stdout: ChildStdout,
+fn recv_from_sink<R: Read>(
+    mut reader: R,
     tx: mpsc::SyncSender<Option<HashDigest>>,
 ) {
     let mut reader = SyncReader::new(|buf| {
-        let n = stdout.read(buf)?;
+        let n = reader.read(buf)?;
         if n == 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -188,14 +202,16 @@ fn recv_from_sink(
 
 impl SinkWrapper for SshWrapper {
     fn open(&mut self) -> Result<Box<dyn Sink>, Error> {
-        let mut child = run_ssh(&self.0, &["piped-sink"])?;
+        let mut child = run_ssh(&self.0, &["piped-sink", &self.0.path])?;
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
+        let stdin = child.stdin.take().unwrap();
         let (block_reqs_tx, block_reqs_rx) = mpsc::sync_channel(1);
         thread::spawn(move || recv_errors(stderr, "sink"));
         thread::spawn(move || recv_from_sink(stdout, block_reqs_tx));
         Ok(Box::new(SshSink {
-            child,
+            child: Some(child),
+            writer: stdin,
             block_reqs_rx,
             done: false,
         }))
@@ -203,29 +219,48 @@ impl SinkWrapper for SshWrapper {
 }
 
 /// Source reading from a remote machine via SSH
-pub struct SshSource {
-    child: Child,
+pub struct SshSource<W: Write> {
+    child: Option<Child>,
+    writer: W,
     index_rx: mpsc::Receiver<IndexEvent>,
     blocks_rx: mpsc::Receiver<(HashDigest, Vec<u8>)>,
 }
 
-impl Drop for SshSource {
+impl<W: Write> Drop for SshSource<W> {
     fn drop(&mut self) {
-        // Join SSH process
-        match self.child.wait() {
-            Ok(s) => {
-                if !s.success() {
-                    error!("SSH to source exited with {:?}", s);
+        if let Some(mut child) = self.child.take() {
+            // Join SSH process
+            match child.wait() {
+                Ok(s) => {
+                    if !s.success() {
+                        error!("SSH to source exited with {:?}", s);
+                    }
                 }
-            }
-            Err(e) => {
-                error!("Error waiting on SSH process to source: {}", e);
+                Err(e) => {
+                    error!("Error waiting on SSH process to source: {}", e);
+                }
             }
         }
     }
 }
 
-impl Source for SshSource {
+impl<W: Write> SshSource<W> {
+    pub fn piped<R>(stdin: W, stdout: R) -> SshSource<W>
+        where R: Read + Send + 'static
+    {
+        let (index_tx, index_rx) = mpsc::channel();
+        let (blocks_tx, blocks_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || recv_from_source(stdout, index_tx, blocks_tx));
+        SshSource {
+            child: None,
+            writer: stdin,
+            index_rx,
+            blocks_rx,
+        }
+    }
+}
+
+impl<W: Write> Source for SshSource<W> {
     fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error> {
         let event = match self.index_rx.try_recv() {
             Ok(event) => Some(event),
@@ -241,8 +276,7 @@ impl Source for SshSource {
     }
 
     fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error> {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        writeln!(stdin, "REQBLOCK 40:{}", hash)?;
+        writeln!(self.writer, "REQBLOCK 40:{}", hash)?;
         Ok(())
     }
 
@@ -262,20 +296,19 @@ impl Source for SshSource {
     }
 
     fn end(&mut self) -> Result<(), Error> {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        stdin.write_all(b"END\n")?;
+        self.writer.write_all(b"END\n")?;
         Ok(())
     }
 }
 
 /// Decode stream from the remote source, parsing instructions and blocks
-fn recv_from_source(
-    mut stdout: ChildStdout,
+fn recv_from_source<R: Read>(
+    mut reader: R,
     index_tx: mpsc::Sender<IndexEvent>,
     blocks_tx: mpsc::SyncSender<(HashDigest, Vec<u8>)>,
 ) {
     let mut reader = SyncReader::new(|buf| {
-        let n = stdout.read(buf)?;
+        let n = reader.read(buf)?;
         if n == 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -366,15 +399,17 @@ fn recv_from_source(
 
 impl SourceWrapper for SshWrapper {
     fn open(&mut self) -> Result<Box<dyn Source>, Error> {
-        let mut child = run_ssh(&self.0, &["piped-source"])?;
+        let mut child = run_ssh(&self.0, &["piped-source", &self.0.path])?;
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
+        let stdin = child.stdin.take().unwrap();
         let (index_tx, index_rx) = mpsc::channel();
         let (blocks_tx, blocks_rx) = mpsc::sync_channel(1);
         thread::spawn(move || recv_errors(stderr, "source"));
         thread::spawn(move || recv_from_source(stdout, index_tx, blocks_tx));
         Ok(Box::new(SshSource {
-            child,
+            child: Some(child),
+            writer: stdin,
             index_rx,
             blocks_rx,
         }))
