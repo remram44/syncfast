@@ -228,18 +228,20 @@ pub fn do_sync<S: Source, R: Sink>(
         {
             // Block data
             sink.feed_block(&hash, &block)?; // blocks on sender side
-        } else if let Some(event) = source.next_from_index()? {
-            // Index instructions
-            match event {
-                IndexEvent::NewFile(path, modified) => {
-                    sink.new_file(&path, modified)?
-                }
-                IndexEvent::NewBlock(hash, size) => {
-                    sink.new_block(&hash, size)?
-                }
-                IndexEvent::End => {
-                    sink.end_files()?;
-                    instructions = false;
+        } else if instructions {
+            if let Some(event) = source.next_from_index()? {
+                // Index instructions
+                match event {
+                    IndexEvent::NewFile(path, modified) => {
+                        sink.new_file(&path, modified)?
+                    }
+                    IndexEvent::NewBlock(hash, size) => {
+                        sink.new_block(&hash, size)?
+                    }
+                    IndexEvent::End => {
+                        sink.end_files()?;
+                        instructions = false;
+                    }
                 }
             }
         }
