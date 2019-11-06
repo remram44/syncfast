@@ -286,40 +286,25 @@ mod tests {
 
     use super::SyncReader;
 
-    enum FakeRead {
-        Error,
-        Data(&'static str),
-    }
-
     #[derive(Debug)]
-    enum FakeError {
-        Fake,
-        End,
-    }
+    struct FakeEol;
 
-    impl fmt::Display for FakeError {
+    impl fmt::Display for FakeEol {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            match self {
-                FakeError::Fake => write!(f, "fake error"),
-                FakeError::End => write!(f, "fake end"),
-            }
+            write!(f, "fake end")
         }
     }
 
-    impl std::error::Error for FakeError {}
-
-    use self::FakeRead::Error;
-    use self::FakeRead::Data;
+    impl std::error::Error for FakeEol {}
 
     fn fake_reader(
-        reads: Vec<FakeRead>,
-    ) -> impl FnMut(&mut [u8]) -> Result<usize, FakeError> {
-        let mut reads: VecDeque<FakeRead> = reads.into_iter().collect();
+        reads: Vec<&'static str>,
+    ) -> impl FnMut(&mut [u8]) -> Result<usize, FakeEol> {
+        let mut reads: VecDeque<&'static str> = reads.into_iter().collect();
         move |buf| {
             match reads.pop_front() {
-                None => Err(FakeError::End),
-                Some(Error) => Err(FakeError::Fake),
-                Some(Data(v)) => {
+                None => Err(FakeEol),
+                Some(v) => {
                     assert!(v.len() <= buf.len());
                     buf[.. v.len()].clone_from_slice(v.as_bytes());
                     Ok(v.len())
@@ -339,7 +324,7 @@ mod tests {
         }
 
         let mut reader = SyncReader::new(fake_reader(
-            vec![Data("")],
+            vec![""],
         ));
         match reader.read_str() {
             Ok(_) => panic!(),
@@ -347,7 +332,7 @@ mod tests {
         }
 
         let mut reader = SyncReader::new(fake_reader(
-            vec![Data("test"), Data(" more data")],
+            vec!["test", " more data"],
         ));
         assert_eq!(reader.read().unwrap(), 4);
         assert_eq!(&reader[.. 4], b"test");
@@ -359,8 +344,8 @@ mod tests {
     fn test_syncreader() {
         let mut reader = SyncReader::new(fake_reader(
             vec![
-                Data("FIL"), Data("E 1"), Data("3:test/f"), Data("ile.txt"),
-                Data(" 1572"), Data("807874\na"),
+                "FIL", "E 1", "3:test/f", "ile.txt",
+                " 1572", "807874\na",
             ],
         ));
         assert_eq!(reader.pos, 0);
@@ -393,7 +378,7 @@ mod tests {
     #[test]
     fn test_syncreader_block_once() {
         let mut reader = SyncReader::new(fake_reader(
-            vec![Data("TEST "), Data("5:abcde\n")],
+            vec!["TEST ", "5:abcde\n"],
         ));
         assert_eq!(reader.pos, 0);
 
@@ -412,7 +397,7 @@ mod tests {
     #[test]
     fn test_syncreader_block_readagain() {
         let mut reader = SyncReader::new(fake_reader(
-            vec![Data("TEST "), Data("5:abc"), Data("de"), Data("\n")],
+            vec!["TEST ", "5:abc", "de", "\n"],
         ));
         assert_eq!(reader.pos, 0);
 
