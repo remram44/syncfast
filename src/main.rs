@@ -212,6 +212,36 @@ fn main() {
                 };
             do_sync(source_obj, sink_obj)
         }
+        Some("piped-source") => {
+            let s_matches = matches.subcommand_matches("piped-source").unwrap();
+            let source = s_matches.value_of_os("source").unwrap();
+
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            let sink_obj = SshSink::piped(
+                stdout,
+                stdin,
+            );
+            let source = Location::Local(source.into());
+
+            let mut source_wrapper: Box<dyn rrsync::sync::SourceWrapper> =
+                match source.open_source() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("Failed to open source: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+            let source_obj: Box<dyn rrsync::sync::Source> =
+                match source_wrapper.open() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("Failed to prepare source: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+            do_sync(source_obj, sink_obj)
+        }
         _ => {
             cli.print_help().expect("Can't print help");
             println!("");
