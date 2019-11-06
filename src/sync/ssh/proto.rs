@@ -107,11 +107,14 @@ impl<E, F> SyncReader<E, F>
             // Find a space
             if let Some(space_idx) = self.buffer[prev_pos .. self.size]
                 .iter()
-                .position(|&b| b == b' ')
+                .position(|&b| { b == b' ' || b == b'\n' })
             {
                 let space_idx = prev_pos + space_idx;
                 let slice = self.pos .. space_idx;
-                self.pos = space_idx + 1;
+                self.pos = space_idx;
+                if self.buffer[space_idx] == b' ' {
+                    self.pos += 1;
+                }
                 // Return slice
                 return Ok(slice);
             } else {
@@ -236,7 +239,7 @@ impl<E, F> SyncReader<E, F>
 
     /// Consume a space
     pub fn read_space(&mut self) -> Result<(), CommunicationError<E>> {
-        if self.pos + 1 >= self.size {
+        if self.pos + 1 > self.size {
             self.read_at_least(1)?;
         }
         if self.buffer[self.pos] != b' ' {
@@ -248,7 +251,7 @@ impl<E, F> SyncReader<E, F>
 
     /// Consume a line ending
     pub fn read_eol(&mut self) -> Result<(), CommunicationError<E>> {
-        if self.pos + 1 >= self.size {
+        if self.pos + 1 > self.size {
             self.read_at_least(1)?;
         }
         if self.buffer[self.pos] != b'\n' {

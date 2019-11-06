@@ -37,7 +37,8 @@ fn recv_errors<R: Read>(stderr: R, prefix: &'static str) {
     let mut buffer = String::new();
     let r: std::io::Result<()> = (|| {
         while stderr.read_line(&mut buffer)? > 0 {
-            eprintln!("remote {}: {}", prefix, buffer);
+            eprint!("remote {}: {}", prefix, buffer);
+            buffer.clear();
         }
         Ok(())
     })();
