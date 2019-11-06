@@ -23,6 +23,7 @@ fn run_ssh(ssh: &SshLocation, args: &[&str]) -> std::io::Result<Child> {
     };
     cmd
         .arg("/rrsync/debug/rrsync")
+        .arg("-v")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -159,6 +160,7 @@ fn recv_from_sink<R: Read>(
 ) {
     let mut reader = SyncReader::new(|buf| {
         let n = reader.read(buf)?;
+        info!("recv_from_sink: {:?}", n);
         if n == 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -182,10 +184,12 @@ fn recv_from_sink<R: Read>(
                         "Invalid hash",
                     ))?;
 
+                info!("Got block request from sink");
                 tx.send(Some(hash)).unwrap();
             } else if &reader[cmd] == b"END" {
                 reader.read_eol()?;
 
+                info!("Got end from sink");
                 tx.send(None).unwrap();
                 return Ok(());
             } else {
@@ -310,6 +314,8 @@ fn recv_from_source<R: Read>(
 ) {
     let mut reader = SyncReader::new(|buf| {
         let n = reader.read(buf)?;
+        info!("recv_from_source: {:?}", n);
+        info!("{}", unsafe { std::str::from_utf8_unchecked(buf) });
         if n == 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -345,6 +351,7 @@ fn recv_from_source<R: Read>(
                     name.into_owned(),
                     modified,
                 );
+                info!("Got file from source");
                 index_tx.send(event).unwrap();
             } else if &reader[cmd.clone()] == b"BLOCK" {
                 let hash = reader.read_str()?;
@@ -365,11 +372,13 @@ fn recv_from_source<R: Read>(
                         "Invalid size",
                     ))?;
 
+                info!("Got block from source");
                 let event = IndexEvent::NewBlock(hash, size);
                 index_tx.send(event).unwrap();
             } else if &reader[cmd.clone()] == b"END_FILES" {
                 reader.read_eol()?;
 
+                info!("Got end from source");
                 index_tx.send(IndexEvent::End).unwrap();
             } else if &reader[cmd] == b"DATA" {
                 let hash = reader.read_str()?;
@@ -384,6 +393,7 @@ fn recv_from_source<R: Read>(
                         "Invalid hash",
                     ))?;
 
+                info!("Got data from source");
                 blocks_tx.send((hash, block)).unwrap();
             } else {
                 return Err(CommunicationError::ProtocolError(
