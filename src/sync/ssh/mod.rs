@@ -8,7 +8,8 @@ use std::thread;
 
 use crate::{Error, HashDigest};
 use crate::locations::SshLocation;
-use crate::sync::{IndexEvent, Sink, SinkWrapper, Source, SourceWrapper};
+use crate::sync::{Sink, SinkEvent, SinkWrapper,
+                  Source, SourceEvent, SourceWrapper};
 use self::proto::{CommunicationError, SyncReader, path_from_u8, path_to_u8};
 
 /// The wrapper for SSH endpoints
@@ -52,7 +53,7 @@ fn recv_errors<R: Read>(stderr: R, prefix: &'static str) {
 pub struct SshSink<W: Write> {
     child: Option<Child>,
     writer: W,
-    block_reqs_rx: mpsc::Receiver<Option<HashDigest>>,
+    rx: mpsc::Receiver<SinkEvent>,
     done: bool,
 }
 
@@ -81,18 +82,16 @@ impl<W: Write> SshSink<W> {
     pub fn piped<R>(stdin: W, stdout: R) -> SshSink<W>
         where R: Read + Send + 'static
     {
-        let (block_reqs_tx, block_reqs_rx) = mpsc::sync_channel(1);
-        thread::spawn(move || recv_from_sink(stdout, block_reqs_tx));
+        let (tx, rx) = mpsc::sync_channel(1);
+        thread::spawn(move || recv_from_sink(stdout, tx));
         SshSink {
             child: None,
             writer: stdin,
-            block_reqs_rx,
+            rx,
             done: false,
         }
     }
-}
 
-impl<W: Write> Sink for SshSink<W> {
     fn new_file(
         &mut self,
         name: &Path,
@@ -114,11 +113,6 @@ impl<W: Write> Sink for SshSink<W> {
         Ok(())
     }
 
-    fn end_files(&mut self) -> Result<(), Error> {
-        self.writer.write_all(b"END_FILES\n")?;
-        Ok(())
-    }
-
     fn feed_block(
         &mut self,
         hash: &HashDigest,
@@ -129,22 +123,39 @@ impl<W: Write> Sink for SshSink<W> {
         self.writer.write_all(b"\n")?;
         Ok(())
     }
+}
 
-    fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error> {
-        let hash = match self.block_reqs_rx.recv() {
-            Ok(Some(hash)) => Some(hash),
-            Ok(None) => {
+impl<W: Write> Sink for SshSink<W> {
+    fn next_event(&mut self) -> Result<Option<SinkEvent>, Error> {
+        if self.done {
+            return Ok(None)
+        }
+
+        Ok(match self.rx.recv() {
+            Ok(SinkEvent::End) => {
                 self.done = true;
-                None
+                Some(SinkEvent::End)
             }
+            Ok(e) => Some(e),
             Err(e @ mpsc::RecvError) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
                     e,
                 )));
             }
-        };
-        Ok(hash)
+        })
+    }
+
+    fn feed_event(&mut self, event: SourceEvent) -> Result<(), Error> {
+        match event {
+            SourceEvent::NewFile(name, modified) => self.new_file(&name, modified),
+            SourceEvent::NewBlock(hash, size) => self.new_block(&hash, size),
+            SourceEvent::End => {
+                self.writer.write_all(b"END_FILES\n")?;
+                Ok(())
+            }
+            SourceEvent::BlockData(hash, block) => self.feed_block(&hash, &block),
+        }
     }
 
     fn is_missing_blocks(&self) -> Result<bool, Error> {
@@ -155,7 +166,7 @@ impl<W: Write> Sink for SshSink<W> {
 /// Decode stream from the remote sink, parsing block requests
 fn recv_from_sink<R: Read>(
     mut reader: R,
-    tx: mpsc::SyncSender<Option<HashDigest>>,
+    tx: mpsc::SyncSender<SinkEvent>,
 ) {
     let mut reader = SyncReader::new(|buf| {
         let n = reader.read(buf)?;
@@ -184,12 +195,12 @@ fn recv_from_sink<R: Read>(
                     ))?;
 
                 info!("Got block request from sink");
-                tx.send(Some(hash)).unwrap();
+                tx.send(SinkEvent::BlockRequest(hash)).unwrap();
             } else if &reader[cmd] == b"END" {
                 reader.read_eol()?;
 
                 info!("Got end from sink");
-                tx.send(None).unwrap();
+                tx.send(SinkEvent::End).unwrap();
                 return Ok(());
             } else {
                 return Err(CommunicationError::ProtocolError(
@@ -210,13 +221,13 @@ impl SinkWrapper for SshWrapper {
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
         let stdin = child.stdin.take().unwrap();
-        let (block_reqs_tx, block_reqs_rx) = mpsc::sync_channel(1);
+        let (tx, rx) = mpsc::sync_channel(1);
         thread::spawn(move || recv_errors(stderr, "sink"));
-        thread::spawn(move || recv_from_sink(stdout, block_reqs_tx));
+        thread::spawn(move || recv_from_sink(stdout, tx));
         Ok(Box::new(SshSink {
             child: Some(child),
             writer: stdin,
-            block_reqs_rx,
+            rx,
             done: false,
         }))
     }
@@ -226,8 +237,7 @@ impl SinkWrapper for SshWrapper {
 pub struct SshSource<W: Write> {
     child: Option<Child>,
     writer: W,
-    index_rx: mpsc::Receiver<IndexEvent>,
-    blocks_rx: mpsc::Receiver<(HashDigest, Vec<u8>)>,
+    rx: mpsc::Receiver<SourceEvent>,
 }
 
 impl<W: Write> Drop for SshSource<W> {
@@ -252,21 +262,19 @@ impl<W: Write> SshSource<W> {
     pub fn piped<R>(stdin: W, stdout: R) -> SshSource<W>
         where R: Read + Send + 'static
     {
-        let (index_tx, index_rx) = mpsc::channel();
-        let (blocks_tx, blocks_rx) = mpsc::sync_channel(1);
-        thread::spawn(move || recv_from_source(stdout, index_tx, blocks_tx));
+        let (tx, rx) = mpsc::sync_channel(1);
+        thread::spawn(move || recv_from_source(stdout, tx));
         SshSource {
             child: None,
             writer: stdin,
-            index_rx,
-            blocks_rx,
+            rx,
         }
     }
 }
 
 impl<W: Write> Source for SshSource<W> {
-    fn next_from_index(&mut self) -> Result<IndexEvent, Error> {
-        let event = match self.index_rx.recv() {
+    fn next_event(&mut self) -> Result<Option<SourceEvent>, Error> {
+        let event = match self.rx.recv() {
             Ok(event) => event,
             Err(e @ mpsc::RecvError) => {
                 return Err(Error::Io(std::io::Error::new(
@@ -275,31 +283,18 @@ impl<W: Write> Source for SshSource<W> {
                 )));
             }
         };
-        Ok(event)
+        Ok(Some(event))
     }
 
-    fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error> {
-        writeln!(self.writer, "REQBLOCK 40:{}", hash)?;
-        Ok(())
-    }
-
-    fn get_next_block(
-        &mut self,
-    ) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
-        let res = match self.blocks_rx.recv() {
-            Ok(r) => Some(r),
-            Err(e @ mpsc::RecvError) => {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    e,
-                )));
+    fn feed_event(&mut self, event: SinkEvent) -> Result<(), Error> {
+        match event {
+            SinkEvent::BlockRequest(hash) => {
+                writeln!(self.writer, "REQBLOCK 40:{}", hash)?;
             }
-        };
-        Ok(res)
-    }
-
-    fn end(&mut self) -> Result<(), Error> {
-        self.writer.write_all(b"END\n")?;
+            SinkEvent::End => {
+                self.writer.write_all(b"END\n")?;
+            }
+        }
         Ok(())
     }
 }
@@ -307,8 +302,7 @@ impl<W: Write> Source for SshSource<W> {
 /// Decode stream from the remote source, parsing instructions and blocks
 fn recv_from_source<R: Read>(
     mut reader: R,
-    index_tx: mpsc::Sender<IndexEvent>,
-    blocks_tx: mpsc::SyncSender<(HashDigest, Vec<u8>)>,
+    tx: mpsc::SyncSender<SourceEvent>,
 ) {
     let mut reader = SyncReader::new(|buf| {
         let n = reader.read(buf)?;
@@ -345,12 +339,12 @@ fn recv_from_source<R: Read>(
                     chrono::Utc,
                 );
 
-                let event = IndexEvent::NewFile(
+                let event = SourceEvent::NewFile(
                     name.into_owned(),
                     modified,
                 );
                 info!("Got file from source");
-                index_tx.send(event).unwrap();
+                tx.send(event).unwrap();
             } else if &reader[cmd.clone()] == b"BLOCK" {
                 let hash = reader.read_str()?;
                 reader.read_space()?;
@@ -371,13 +365,13 @@ fn recv_from_source<R: Read>(
                     ))?;
 
                 info!("Got block from source");
-                let event = IndexEvent::NewBlock(hash, size);
-                index_tx.send(event).unwrap();
+                let event = SourceEvent::NewBlock(hash, size);
+                tx.send(event).unwrap();
             } else if &reader[cmd.clone()] == b"END_FILES" {
                 reader.read_eol()?;
 
                 info!("Got end from source");
-                index_tx.send(IndexEvent::End).unwrap();
+                tx.send(SourceEvent::End).unwrap();
             } else if &reader[cmd] == b"DATA" {
                 let hash = reader.read_str()?;
                 reader.read_space()?;
@@ -391,8 +385,9 @@ fn recv_from_source<R: Read>(
                         "Invalid hash",
                     ))?;
 
+                let event = SourceEvent::BlockData(hash, block);
                 info!("Got data from source");
-                blocks_tx.send((hash, block)).unwrap();
+                tx.send(event).unwrap();
             } else {
                 return Err(CommunicationError::ProtocolError(
                     "Invalid command",
@@ -412,15 +407,13 @@ impl SourceWrapper for SshWrapper {
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
         let stdin = child.stdin.take().unwrap();
-        let (index_tx, index_rx) = mpsc::channel();
-        let (blocks_tx, blocks_rx) = mpsc::sync_channel(1);
+        let (tx, rx) = mpsc::sync_channel(1);
         thread::spawn(move || recv_errors(stderr, "source"));
-        thread::spawn(move || recv_from_source(stdout, index_tx, blocks_tx));
+        thread::spawn(move || recv_from_source(stdout, tx));
         Ok(Box::new(SshSource {
             child: Some(child),
             writer: stdin,
-            index_rx,
-            blocks_rx,
+            rx,
         }))
     }
 }
