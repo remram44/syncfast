@@ -64,6 +64,12 @@ pub trait Sink {
 
     /// Are we waiting on blocks?
     fn is_missing_blocks(&self) -> Result<bool, Error>;
+
+    /// Transmission window for instructions
+    fn instructions_window(&self) -> Result<Option<usize>, Error> {
+        // This means that by default all the instructions will be sent first
+        Ok(None)
+    }
 }
 
 /// Events that are received from the index data.
@@ -213,36 +219,41 @@ pub fn do_sync<S: Source, R: Sink>(
     mut source: S,
     mut sink: R,
 ) -> Result<(), Error> {
-    // Send instructions
-    loop {
-        let event = source.next_from_index()?;
-        match event {
-            IndexEvent::NewFile(path, modified) => {
-                info!("instruction file {:?}", path);
-                sink.new_file(&path, modified)?
-            }
-            IndexEvent::NewBlock(hash, size) => {
-                info!("instruction block {}", hash);
-                sink.new_block(&hash, size)?
-            }
-            IndexEvent::End => {
-                info!("instruction end");
-                sink.end_files()?;
-                break;
+    let mut instructions = true;
+
+    while instructions || sink.is_missing_blocks()? {
+        info!("pumping");
+        if instructions && sink.instructions_window()?.unwrap_or(1) > 0 {
+            // Send instructions
+            let event = source.next_from_index()?;
+            match event {
+                IndexEvent::NewFile(path, modified) => {
+                    info!("instruction file {:?}", path);
+                    sink.new_file(&path, modified)?
+                }
+                IndexEvent::NewBlock(hash, size) => {
+                    info!("instruction block {}", hash);
+                    sink.new_block(&hash, size)?
+                }
+                IndexEvent::End => {
+                    info!("instruction end");
+                    sink.end_files()?;
+                    instructions = false;
+                }
             }
         }
-    }
 
-    // Request blocks
-    while sink.is_missing_blocks()? {
-        if let Some(hash) = sink.next_requested_block()? {
-            // Block requests
-            info!("block request {}", hash);
-            source.request_block(&hash)?;
-        } else if let Some((hash, block)) = source.get_next_block()? {
-            // Block data
-            info!("block data {}", hash);
-            sink.feed_block(&hash, &block)?; // blocks on sender side
+        // Request blocks
+        if sink.is_missing_blocks()? {
+            if let Some(hash) = sink.next_requested_block()? {
+                // Block requests
+                info!("block request {}", hash);
+                source.request_block(&hash)?;
+            } else if let Some((hash, block)) = source.get_next_block()? {
+                // Block data
+                info!("block data {}", hash);
+                sink.feed_block(&hash, &block)?; // blocks on sender side
+            }
         }
     }
 
