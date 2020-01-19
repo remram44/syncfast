@@ -223,7 +223,7 @@ pub fn do_sync<S: Source, R: Sink>(
 
     while instructions || sink.is_missing_blocks()? {
         info!("pumping");
-        if instructions && sink.instructions_window()?.unwrap_or(1) > 0 {
+        while instructions && sink.instructions_window()?.unwrap_or(1) > 0 {
             // Send instructions
             let event = source.next_from_index()?;
             match event {
