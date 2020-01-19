@@ -292,10 +292,10 @@ impl<'a> FsSource<'a> {
 }
 
 impl<'a> Source for FsSource<'a> {
-    fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error> {
+    fn next_from_index(&mut self) -> Result<IndexEvent, Error> {
         // If there are blocks left in current file, return one
         if let Some((hash, size)) = self.blocks.pop_front() {
-            return Ok(Some(IndexEvent::NewBlock(hash, size)));
+            return Ok(IndexEvent::NewBlock(hash, size));
         }
 
         // If there are more files left, read the next one in
@@ -305,11 +305,11 @@ impl<'a> Source for FsSource<'a> {
                 .into_iter()
                 .map(|(hash, _offset, size)| (hash, size))
                 .collect();
-            return Ok(Some(IndexEvent::NewFile(name, modified)));
+            return Ok(IndexEvent::NewFile(name, modified));
         }
 
         // No more files
-        Ok(Some(IndexEvent::End))
+        Ok(IndexEvent::End)
     }
 
     fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error> {

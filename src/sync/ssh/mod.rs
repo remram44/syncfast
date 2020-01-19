@@ -131,14 +131,13 @@ impl<W: Write> Sink for SshSink<W> {
     }
 
     fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error> {
-        let hash = match self.block_reqs_rx.try_recv() {
+        let hash = match self.block_reqs_rx.recv() {
             Ok(Some(hash)) => Some(hash),
             Ok(None) => {
                 self.done = true;
                 None
             }
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(e @ mpsc::TryRecvError::Disconnected) => {
+            Err(e @ mpsc::RecvError) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
                     e,
@@ -266,11 +265,10 @@ impl<W: Write> SshSource<W> {
 }
 
 impl<W: Write> Source for SshSource<W> {
-    fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error> {
-        let event = match self.index_rx.try_recv() {
-            Ok(event) => Some(event),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(e @ mpsc::TryRecvError::Disconnected) => {
+    fn next_from_index(&mut self) -> Result<IndexEvent, Error> {
+        let event = match self.index_rx.recv() {
+            Ok(event) => event,
+            Err(e @ mpsc::RecvError) => {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
                     e,

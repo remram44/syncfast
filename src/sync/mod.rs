@@ -86,7 +86,7 @@ pub enum IndexEvent {
 /// the network.
 pub trait Source {
     /// Get the next event from the index data
-    fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error>;
+    fn next_from_index(&mut self) -> Result<IndexEvent, Error>;
 
     /// Asynchronously request a block from this source
     fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error>;
@@ -158,7 +158,7 @@ impl<R: Sink + ?Sized> Sink for Box<R> {
 }
 
 impl<S: Source + ?Sized> Source for Box<S> {
-    fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error> {
+    fn next_from_index(&mut self) -> Result<IndexEvent, Error> {
         (**self).next_from_index()
     }
 
