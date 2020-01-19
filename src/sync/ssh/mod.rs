@@ -273,7 +273,7 @@ impl<W: Write> SshSource<W> {
 }
 
 impl<W: Write> Source for SshSource<W> {
-    fn next_event(&mut self) -> Result<Option<SourceEvent>, Error> {
+    fn next_event(&mut self) -> Result<SourceEvent, Error> {
         let event = match self.rx.recv() {
             Ok(event) => event,
             Err(e @ mpsc::RecvError) => {
@@ -283,7 +283,7 @@ impl<W: Write> Source for SshSource<W> {
                 )));
             }
         };
-        Ok(Some(event))
+        Ok(event)
     }
 
     fn feed_event(&mut self, event: SinkEvent) -> Result<(), Error> {
@@ -307,7 +307,7 @@ fn recv_from_source<R: Read>(
     let mut reader = SyncReader::new(|buf| {
         let n = reader.read(buf)?;
         info!("recv_from_source: {:?}", n);
-        info!("{}", unsafe { std::str::from_utf8_unchecked(buf) });
+        //info!("{}", unsafe { std::str::from_utf8_unchecked(&buf[.. n]) });
         if n == 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -320,6 +320,7 @@ fn recv_from_source<R: Read>(
     let res: Result<(), CommunicationError<std::io::Error>> = (move || {
         loop {
             let cmd = reader.read_to_space()?;
+            info!("Reading {} from source", String::from_utf8_lossy(&reader[cmd.clone()]));
             if &reader[cmd.clone()] == b"FILE" {
                 let name = reader.read_str()?;
                 reader.read_space()?;

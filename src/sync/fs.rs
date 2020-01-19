@@ -63,6 +63,7 @@ pub struct FsSink<'a> {
     current_file: Option<(usize, Rc<RefCell<TempFile>>)>,
     waiting_blocks: HashMap<HashDigest, Vec<BlockDestination>>,
     blocks_to_request: VecDeque<HashDigest>,
+    end: bool,
 }
 
 impl<'a> FsSink<'a> {
@@ -74,6 +75,7 @@ impl<'a> FsSink<'a> {
             current_file: None,
             waiting_blocks: HashMap::new(),
             blocks_to_request: VecDeque::new(),
+            end: false,
         }
     }
 
@@ -252,15 +254,23 @@ impl<'a> FsSink<'a> {
 
 impl<'a> Sink for FsSink<'a> {
     fn next_event(&mut self) -> Result<Option<SinkEvent>, Error> {
-        Ok(self.blocks_to_request.pop_front()
-            .map(|hash| SinkEvent::BlockRequest(hash)))
+        if let Some(hash) = self.blocks_to_request.pop_front() {
+            Ok(Some(SinkEvent::BlockRequest(hash)))
+        } else if self.end {
+            Ok(Some(SinkEvent::End))
+        } else {
+            Ok(None)
+        }
     }
 
     fn feed_event(&mut self, event: SourceEvent) -> Result<(), Error> {
         match event {
             SourceEvent::NewFile(name, modified) => self.new_file(&name, modified),
             SourceEvent::NewBlock(hash, size) => self.new_block(&hash, size),
-            SourceEvent::End => self.end_current_file(),
+            SourceEvent::End => {
+                self.end = true;
+                self.end_current_file()
+            }
             SourceEvent::BlockData(hash, block) => self.feed_block(&hash, &block),
         }
     }
@@ -300,14 +310,14 @@ impl<'a> FsSource<'a> {
 }
 
 impl<'a> Source for FsSource<'a> {
-    fn next_event(&mut self) -> Result<Option<SourceEvent>, Error> {
+    fn next_event(&mut self) -> Result<SourceEvent, Error> {
         // If there are requested blocks
         if let Some(hash) = self.requested_blocks.pop_front() {
             if let Some((name, offset, _)) = self.index.get_block(&hash)?  {
-                return Ok(Some(SourceEvent::BlockData(
+                return Ok(SourceEvent::BlockData(
                     hash,
                     read_block(&self.root_dir.join(name), offset)?,
-                )));
+                ));
             } else {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -318,7 +328,7 @@ impl<'a> Source for FsSource<'a> {
 
         // If there are blocks left in current file, return one
         if let Some((hash, size)) = self.blocks.pop_front() {
-            return Ok(Some(SourceEvent::NewBlock(hash, size)));
+            return Ok(SourceEvent::NewBlock(hash, size));
         }
 
         // If there are more files left, read the next one in
@@ -328,16 +338,12 @@ impl<'a> Source for FsSource<'a> {
                 .into_iter()
                 .map(|(hash, _offset, size)| (hash, size))
                 .collect();
-            return Ok(Some(SourceEvent::NewFile(name, modified)));
+            return Ok(SourceEvent::NewFile(name, modified));
         }
 
         // No more files
-        if !self.end {
-            self.end = true;
-            Ok(Some(SourceEvent::End))
-        } else {
-            Ok(None)
-        }
+        self.end = true;
+        Ok(SourceEvent::End)
     }
 
     fn feed_event(&mut self, event: SinkEvent) -> Result<(), Error> {

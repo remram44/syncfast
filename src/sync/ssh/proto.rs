@@ -220,6 +220,11 @@ impl<E, F> SyncReader<E, F>
                     &self.buffer[colon_idx + 1 .. self.pos],
                 );
 
+                // Clear this from our buffer
+                copy_in_place(&mut self.buffer, self.pos .. self.size, colon_idx + 1);
+                self.size = colon_idx + 1 + self.size - self.pos;
+                self.pos = colon_idx + 1;
+
                 // Read more bytes directly into buffer
                 let mut len = block.len();
                 block.resize(size, 0);

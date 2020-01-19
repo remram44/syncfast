@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use crate::{Error, HashDigest};
 
 /// Events from the sink.
+#[derive(Debug)]
 pub enum SinkEvent {
     /// A block is needed
     BlockRequest(HashDigest),
@@ -38,6 +39,7 @@ pub enum SinkEvent {
 }
 
 /// Events from the source.
+#[derive(Debug)]
 pub enum SourceEvent {
     /// Start a new file (e.g. next `NewBlock` are blocks of that file)
     NewFile(PathBuf, chrono::DateTime<chrono::Utc>),
@@ -72,7 +74,7 @@ pub trait Sink {
 /// that reads from files, and the receiving side has a source that reads from
 /// the network.
 pub trait Source {
-    fn next_event(&mut self) -> Result<Option<SourceEvent>, Error>;
+    fn next_event(&mut self) -> Result<SourceEvent, Error>;
 
     fn feed_event(&mut self, SinkEvent) -> Result<(), Error>;
 }
@@ -92,7 +94,7 @@ impl<R: Sink + ?Sized> Sink for Box<R> {
 }
 
 impl<S: Source + ?Sized> Source for Box<S> {
-    fn next_event(&mut self) -> Result<Option<SourceEvent>, Error> {
+    fn next_event(&mut self) -> Result<SourceEvent, Error> {
         (**self).next_event()
     }
 
@@ -137,32 +139,39 @@ pub fn do_sync<S: Source, R: Sink>(
     mut source: S,
     mut sink: R,
 ) -> Result<(), Error> {
-    let mut instructions = true;
-
-    while instructions || sink.is_missing_blocks()? {
-        info!("pumping");
-
-        {
-            if let Some(event) = source.next_event()? {
-                if let SourceEvent::End = event {
-                    instructions = false;
-                }
-                sink.feed_event(event)?;
-            }
-        }
-
-        {
-            if let Some(event) = sink.next_event()? {
-                if !instructions {
-                    if let SinkEvent::End = event {
-                        break;
-                    }
-                }
-                source.feed_event(event)?;
-            }
+    loop {
+        let event = source.next_event()?;
+        info!(" > {:?}", event);
+        if let SourceEvent::End = event {
+            sink.feed_event(event)?;
+            break;
+        } else {
+            sink.feed_event(event)?;
         }
     }
 
-    info!("over");
+    let mut recv = true;
+    while recv || sink.is_missing_blocks()? {
+        if recv {
+            if let Some(event) = sink.next_event()? {
+                info!(" < {:?}", event);
+                if let SinkEvent::End = event {
+                    recv = false;
+                    source.feed_event(event)?;
+                    continue;
+                } else {
+                    source.feed_event(event)?;
+                }
+            }
+        }
+
+        match source.next_event()? {
+            SourceEvent::End => {}
+            e => sink.feed_event(e)?,
+        }
+    }
+    // TODO: Source needs two "end" signal: end of index, end of transfer
+
+    info!("Transfer complete");
     Ok(())
 }

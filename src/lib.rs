@@ -79,7 +79,7 @@ impl fmt::Display for InvalidHashDigest {
 impl std::error::Error for InvalidHashDigest {}
 
 /// Type for the hashes
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct HashDigest([u8; 20]);
 
 impl HashDigest {
@@ -121,6 +121,12 @@ impl FromSql for HashDigest {
             HashDigest::from_hex(s)
                 .map_err(|e| FromSqlError::Other(Box::new(e)))
         })
+    }
+}
+
+impl fmt::Debug for HashDigest {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "HashDigest({})", self)
     }
 }
 
