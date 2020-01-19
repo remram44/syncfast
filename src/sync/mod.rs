@@ -213,45 +213,39 @@ pub fn do_sync<S: Source, R: Sink>(
     mut source: S,
     mut sink: R,
 ) -> Result<(), Error> {
-    let mut instructions = true;
-    while instructions || sink.is_missing_blocks()? {
-        info!("pumping");
-        // Things are done in order so that bandwidth is used in a smart way
-        // For example, if you block on sending block data, you will have
-        // received more block requests in the next loop, and you'll only
-        // transmit (sender side) or process (receiver side) index instructions
-        // when there's nothing better to do
-        if let Some(hash) = sink.next_requested_block()? {
-            // Block requests
-            info!("block request {}", hash);
-            source.request_block(&hash)?; // can block on HTTP receiver side
-        } else if let Some((hash, block)) = source.get_next_block()?
-        // blocks on receiver side
-        {
-            // Block data
-            info!("block data {}", hash);
-            sink.feed_block(&hash, &block)?; // blocks on sender side
-        } else if instructions {
-            if let Some(event) = source.next_from_index()? {
-                // Index instructions
-                match event {
-                    IndexEvent::NewFile(path, modified) => {
-                        info!("instruction file {:?}", path);
-                        sink.new_file(&path, modified)?
-                    }
-                    IndexEvent::NewBlock(hash, size) => {
-                        info!("instruction block {}", hash);
-                        sink.new_block(&hash, size)?
-                    }
-                    IndexEvent::End => {
-                        info!("instruction end");
-                        sink.end_files()?;
-                        instructions = false;
-                    }
-                }
+    // Send instructions
+    loop {
+        let event = source.next_from_index()?;
+        match event {
+            IndexEvent::NewFile(path, modified) => {
+                info!("instruction file {:?}", path);
+                sink.new_file(&path, modified)?
+            }
+            IndexEvent::NewBlock(hash, size) => {
+                info!("instruction block {}", hash);
+                sink.new_block(&hash, size)?
+            }
+            IndexEvent::End => {
+                info!("instruction end");
+                sink.end_files()?;
+                break;
             }
         }
     }
+
+    // Request blocks
+    while sink.is_missing_blocks()? {
+        if let Some(hash) = sink.next_requested_block()? {
+            // Block requests
+            info!("block request {}", hash);
+            source.request_block(&hash)?;
+        } else if let Some((hash, block)) = source.get_next_block()? {
+            // Block data
+            info!("block data {}", hash);
+            sink.feed_block(&hash, &block)?; // blocks on sender side
+        }
+    }
+
     // Indicate to the source that the sink is done
     // (it will not request another block)
     source.end()?;
