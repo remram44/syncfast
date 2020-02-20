@@ -3,6 +3,8 @@ rust:
   - 1.31.0
   - stable
   - nightly
+env:
+  - RUSTFLAGS="-D warnings"
 sudo: false
 script: |
   cargo build --verbose && \
