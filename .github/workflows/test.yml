@@ -13,8 +13,6 @@ jobs:
         include:
         - os: macos-latest
           rust-version: 1.31.0
-        - os: windows-latest
-          rust-version: 1.31.0
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v2
