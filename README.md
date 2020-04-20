@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/remram44/rrsync.svg?branch=master)](https://travis-ci.org/remram44/rrsync/builds)
+[![Build Status](https://github.com/remram44/rrsync/workflows/Test/badge.svg)](https://github.com/remram44/rrsync/actions)
 [![Crates.io](https://img.shields.io/crates/v/rrsync.svg)](https://crates.io/crates/rrsync)
 [![Documentation](https://docs.rs/rrsync/badge.svg)](https://docs.rs/rrsync)
 [![License](https://img.shields.io/crates/l/rrsync.svg)](https://github.com/remram44/rrsync/blob/master/LICENSE.txt)
