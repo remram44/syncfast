@@ -84,8 +84,7 @@ fn main() {
     let matches = match cli.get_matches_from_safe_borrow(env::args_os()) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{}", e);
-            std::process::exit(2);
+            e.exit();
         }
     };
 
