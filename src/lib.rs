@@ -1,6 +1,6 @@
 //! Rsync-like library/program.
 //!
-//! syncfast is intended to provide the functionality of rsync ("live" transfer
+//! Rrsync is intended to provide the functionality of rsync ("live" transfer
 //! of files/directories over SSH), rdiff (creation of binary patches between
 //! files, for later application), and zsync (efficient synchronization of
 //! files or file trees from a central "dumb" HTTP server). It also has some
@@ -10,7 +10,8 @@
 #![forbid(unsafe_code)]
 
 mod index;
-pub mod sync;
+//mod streaming_iterator;
+//pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
 use std::fmt;
@@ -99,7 +100,7 @@ impl FromSql for HashDigest {
                     InvalidHashDigest::WrongSize,
                 )))
             } else {
-                let mut bytes = [0u8; HASH_DIGEST_LEN];
+                let mut bytes = [0u8; 20];
                 for (i, byte) in (&mut bytes).iter_mut().enumerate() {
                     *byte = u8::from_str_radix(&s[i * 2 .. i * 2 + 2], 16)
                         .map_err(|_| {

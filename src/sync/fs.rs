@@ -78,7 +78,7 @@ impl FsDestination {
         index.commit()?;
         Ok(FsDestination {
             index,
-            root_dir,
+            root_dir: path,
             current_file: None,
             waiting_blocks: HashMap::new(),
             blocks_to_request: VecDeque::new(),
@@ -276,7 +276,7 @@ impl Destination for FsDestination {
 pub struct FsSource {
     index: Index,
     root_dir: PathBuf,
-    files: VecDeque<(u32, PathBuf, chrono::DateTime<chrono::Utc>)>,
+    files: VecDeque<(u32, PathBuf)>,
     blocks: VecDeque<(HashDigest, usize)>,
     requested_blocks: VecDeque<HashDigest>,
 }
@@ -295,12 +295,13 @@ impl FsSource {
         info!("Source indexed, {} files", files.len());
         Ok(FsSource {
             index,
-            root_dir,
+            root_dir: path.to_path_buf(),
             files,
             blocks: VecDeque::new(),
             requested_blocks: VecDeque::new(),
         })
     }
+
 }
 
 impl Source for FsSource {

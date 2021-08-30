@@ -1,33 +1,87 @@
 //! This module contains the transfer protocol handlers.
-//!
-//! The general architecture is as follows:
-//!
-//! ```plain
-//! +--------+   new index   +-------------+
-//! |        | +-----------> |             |
-//! | Source |               | Destination |
-//! |        | request block |             |
-//! |        | <-----------+ |             |
-//! |        |               |             |
-//! |        |  send block   |             |
-//! |        | +-----------> |             |
-//! +--------+               +-------------+
-//! ```
-//!
-//! First the old index is computed and loaded in full.
-//!
-//! Then, the new index is fed in either all at once or in a streaming fashion.
-//!
-//! The destination will request blocks that are missing, which are fed in as
-//! they are received.
 
 pub mod fs;
 pub mod locations;
+pub mod ssh;
 
-use std::path::{Path, PathBuf};
+use futures::{FutureExt, select};
+use futures::future::Either;
+use std::future::{Future, Pending, Ready, pending, ready};
 
 use crate::{Error, HashDigest};
-use crate::index::Index;
+
+#[derive(Debug, PartialEq)]
+pub enum Message<'a> {
+    FileEntry(&'a [u8], usize, HashDigest),
+    EndFiles,
+    GetFile(&'a [u8]),
+    FileStart(&'a [u8]),
+    FileBlock(HashDigest, usize),
+    FileEnd,
+    GetBlock(HashDigest),
+    BlockData(&'a [u8]),
+    Complete,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum OwnedMessage {
+    FileEntry(Vec<u8>, usize, HashDigest),
+    EndFiles,
+    GetFile(Vec<u8>),
+    FileStart(Vec<u8>),
+    FileBlock(HashDigest, usize),
+    FileEnd,
+    GetBlock(HashDigest),
+    BlockData(Vec<u8>),
+    Complete,
+}
+
+impl<'a> From<Message<'a>> for OwnedMessage {
+    fn from(msg: Message<'a>) -> OwnedMessage {
+        match msg {
+            Message::FileEntry(name, size, digest) => OwnedMessage::FileEntry(name.to_owned(), size, digest),
+            Message::EndFiles => OwnedMessage::EndFiles,
+            Message::GetFile(name) => OwnedMessage::GetFile(name.to_owned()),
+            Message::FileStart(name) => OwnedMessage::FileStart(name.to_owned()),
+            Message::FileBlock(digest, size) => OwnedMessage::FileBlock(digest, size),
+            Message::FileEnd => OwnedMessage::FileEnd,
+            Message::GetBlock(digest) => OwnedMessage::GetBlock(digest),
+            Message::BlockData(data) => OwnedMessage::BlockData(data.to_owned()),
+            Message::Complete => OwnedMessage::Complete,
+        }
+    }
+}
+
+impl<'a> From<&'a OwnedMessage> for Message<'a> {
+    fn from(msg: &'a OwnedMessage) -> Message<'a> {
+        match msg {
+            &OwnedMessage::FileEntry(ref name, size, ref digest) => Message::FileEntry(name, size, digest.clone()),
+            &OwnedMessage::EndFiles => Message::EndFiles,
+            &OwnedMessage::GetFile(ref name) => Message::GetFile(name),
+            &OwnedMessage::FileStart(ref name) => Message::FileStart(name),
+            &OwnedMessage::FileBlock(ref digest, size) => Message::FileBlock(digest.clone(), size),
+            &OwnedMessage::FileEnd => Message::FileEnd,
+            &OwnedMessage::GetBlock(ref digest) => Message::GetBlock(digest.clone()),
+            &OwnedMessage::BlockData(ref data) => Message::BlockData(data),
+            &OwnedMessage::Complete => Message::Complete,
+        }
+    }
+}
+
+pub enum SourceEvent {
+    FileEntry(Vec<u8>, usize, HashDigest),
+    EndFiles,
+    FileStart(Vec<u8>),
+    FileBlock(HashDigest, usize),
+    FileEnd,
+    BlockData(Vec<u8>),
+}
+
+pub enum DestinationEvent {
+    GetFile(Vec<u8>),
+    GetBlock(HashDigest),
+    Complete,
+}
 
 /// The destination representing where the files are being sent.
 ///
@@ -35,48 +89,8 @@ use crate::index::Index;
 /// destination encapsulating some network protocol, and the receiving side has
 /// a destination that actually updates files.
 pub trait Destination {
-    /// Start on a new file
-    fn new_file(
-        &mut self,
-        path: &Path,
-        modified: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), Error>;
-
-    /// Feed entry from the new index
-    fn new_block(
-        &mut self,
-        hash: &HashDigest,
-        size: usize,
-    ) -> Result<(), Error>;
-
-    /// End of files
-    fn end_files(&mut self) -> Result<(), Error>;
-
-    /// Feed a block that was requested
-    fn feed_block(
-        &mut self,
-        hash: &HashDigest,
-        block: &[u8],
-    ) -> Result<(), Error>;
-
-    /// Ask which blocks to get next
-    fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error>;
-
-    /// Are we waiting on blocks?
-    fn is_missing_blocks(&self) -> Result<bool, Error>;
-}
-
-/// Events that are received from the index data.
-#[derive(Debug)]
-pub enum IndexEvent {
-    /// Start a new file (e.g. next `NewBlock` are blocks of that file)
-    NewFile(PathBuf, chrono::DateTime<chrono::Utc>),
-
-    /// Add a new block to the current file
-    NewBlock(HashDigest, usize),
-
-    /// End of the whole transfer
-    End,
+    fn receive(&mut self) -> Result<Option<DestinationEvent>, Error>;
+    fn send(&mut self, event: SourceEvent) -> Result<(), Error>;
 }
 
 /// The source, representing where the files are coming from.
@@ -85,129 +99,87 @@ pub enum IndexEvent {
 /// that reads from files, and the receiving side has a source that reads from
 /// the network.
 pub trait Source {
-    /// Get the next event from the index data
-    fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error>;
-
-    /// Asynchronously request a block from this source
-    fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error>;
-
-    /// Get a block that was previously requested
-    fn get_next_block(
-        &mut self,
-    ) -> Result<Option<(HashDigest, Vec<u8>)>, Error>;
+    fn receive(&mut self) -> Result<Option<SourceEvent>, Error>;
+    fn send(&mut self, event: DestinationEvent) -> Result<(), Error>;
 }
 
-/// Additional methods for `Destination`, through an auto-implemented trait
-pub trait DestinationExt {
-    /// Feed a whole new index
-    fn new_index(&mut self, index: &Index) -> Result<(), Error>;
+pub trait AsyncDestination {
+    type RFuture: Future<Output=Result<DestinationEvent, Error>>;
+    type SFuture: Future<Output=Result<(), Error>>;
+
+    fn receive(&mut self) -> Self::RFuture;
+    fn send(&mut self, event: SourceEvent) -> Self::SFuture;
 }
 
-impl<R: Destination> DestinationExt for R {
-    fn new_index(&mut self, index: &Index) -> Result<(), Error> {
-        for (file_id, path, modified) in index.list_files()? {
-            self.new_file(&path, modified)?;
-            for (hash, _offset, size) in index.list_file_blocks(file_id)? {
-                self.new_block(&hash, size)?;
-            }
+pub struct AsyncDestinationAdapter<S: Destination>(S);
+
+impl<S: Destination> AsyncDestination for AsyncDestinationAdapter<S> {
+    type RFuture = Either<Ready<Result<DestinationEvent, Error>>, Pending<Result<DestinationEvent, Error>>>;
+    type SFuture = Ready<Result<(), Error>>;
+
+    fn receive(&mut self) -> Self::RFuture {
+        match self.0.receive() {
+            Ok(Some(e)) => Either::Left(ready(Ok(e))),
+            Ok(None) => Either::Right(pending()),
+            Err(e) => Either::Left(ready(Err(e))),
         }
-        self.end_files()?;
-        Ok(())
+    }
+
+    fn send(&mut self, event: SourceEvent) -> Self::SFuture {
+        ready(self.0.send(event))
     }
 }
 
-impl<R: Destination + ?Sized> Destination for Box<R> {
-    fn new_file(
-        &mut self,
-        path: &Path,
-        modified: chrono::DateTime<chrono::Utc>,
-    ) -> Result<(), Error> {
-        (**self).new_file(path, modified)
+pub trait AsyncSource {
+    type RFuture: Future<Output=Result<SourceEvent, Error>>;
+    type SFuture: Future<Output=Result<(), Error>>;
+
+    fn receive(&mut self) -> Self::RFuture;
+    fn send(&mut self, event: DestinationEvent) -> Self::SFuture;
+}
+
+pub struct AsyncSourceAdapter<S: Source>(S);
+
+impl<S: Source> AsyncSource for AsyncSourceAdapter<S> {
+    type RFuture = Either<Ready<Result<SourceEvent, Error>>, Pending<Result<SourceEvent, Error>>>;
+    type SFuture = Ready<Result<(), Error>>;
+
+    fn receive(&mut self) -> Self::RFuture {
+        match self.0.receive() {
+            Ok(Some(e)) => Either::Left(ready(Ok(e))),
+            Ok(None) => Either::Right(pending()),
+            Err(e) => Either::Left(ready(Err(e))),
+        }
     }
 
-    fn new_block(
-        &mut self,
-        hash: &HashDigest,
-        size: usize,
-    ) -> Result<(), Error> {
-        (**self).new_block(hash, size)
-    }
-
-    fn end_files(&mut self) -> Result<(), Error> {
-        (**self).end_files()
-    }
-
-    fn feed_block(
-        &mut self,
-        hash: &HashDigest,
-        block: &[u8],
-    ) -> Result<(), Error> {
-        (**self).feed_block(hash, block)
-    }
-
-    fn next_requested_block(&mut self) -> Result<Option<HashDigest>, Error> {
-        (**self).next_requested_block()
-    }
-
-    fn is_missing_blocks(&self) -> Result<bool, Error> {
-        (**self).is_missing_blocks()
+    fn send(&mut self, event: DestinationEvent) -> Self::SFuture {
+        ready(self.0.send(event))
     }
 }
 
-impl<S: Source + ?Sized> Source for Box<S> {
-    fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error> {
-        (**self).next_from_index()
-    }
-
-    fn request_block(&mut self, hash: &HashDigest) -> Result<(), Error> {
-        (**self).request_block(hash)
-    }
-
-    fn get_next_block(
-        &mut self,
-    ) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
-        (**self).get_next_block()
-    }
-}
-
-/// Sync from the source to the destination.
-///
-/// This takes care of sending instructions and blocks, and the missing block
-/// requests backwards.
-pub fn do_sync<S: Source, R: Destination>(
+pub async fn do_sync<
+    SR: Future<Output=Result<SourceEvent, Error>>,
+    SS: Future<Output=Result<(), Error>>,
+    RR: Future<Output=Result<DestinationEvent, Error>>,
+    RS: Future<Output=Result<(), Error>>,
+    S: AsyncSource<RFuture=SR, SFuture=SS>,
+    R: AsyncDestination<RFuture=RR, SFuture=RS>,
+>(
     mut source: S,
     mut destination: R,
 ) -> Result<(), Error> {
-    let mut instructions = true;
-    while instructions || destination.is_missing_blocks()? {
-        // Things are done in order so that bandwidth is used in a smart way
-        // For example, if you block on sending block data, you will have
-        // received more block requests in the next loop, and you'll only
-        // transmit (sender side) or process (receiver side) index instructions
-        // when there's nothing better to do
-        if let Some(hash) = destination.next_requested_block()? {
-            // Block requests
-            source.request_block(&hash)?; // can block on HTTP receiver side
-        } else if let Some((hash, block)) = source.get_next_block()?
-        // blocks on receiver side
-        {
-            // Block data
-            destination.feed_block(&hash, &block)?; // blocks on sender side
-        } else if let Some(event) = source.next_from_index()? {
-            // Index instructions
-            match event {
-                IndexEvent::NewFile(path, modified) => {
-                    destination.new_file(&path, modified)?
+    let mut done = false;
+    while !done {
+        select! {
+            msg = source.receive().fuse() => destination.send(msg?).await?,
+            msg = destination.receive().fuse() => {
+                let msg = msg?;
+                if let DestinationEvent::Complete = msg {
+                    done = true
                 }
-                IndexEvent::NewBlock(hash, size) => {
-                    destination.new_block(&hash, size)?
-                }
-                IndexEvent::End => {
-                    destination.end_files()?;
-                    instructions = false;
-                }
+                source.send(msg).await?
             }
-        }
+        };
     }
     Ok(())
 }
