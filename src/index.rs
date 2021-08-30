@@ -10,29 +10,30 @@ use std::path::{Path, PathBuf};
 use crate::{Error, HashDigest};
 
 const SCHEMA: &str = "
-    CREATE TABLE version(
-        name VARCHAR(8) NOT NULL,
-        version VARCHAR(16) NOT NULL
-    );
-    INSERT INTO version(name, version) VALUES('syncfast', '0.1');
-
     CREATE TABLE files(
         file_id INTEGER NOT NULL PRIMARY KEY,
         name VARCHAR(512) NOT NULL,
-        modified DATETIME NOT NULL
+        modified DATETIME NOT NULL,
+        size INTEGER NULL,
+        blocks_hash VARCHAR(40) NULL
     );
     CREATE INDEX idx_files_name ON files(name);
 
     CREATE TABLE blocks(
-        hash VARCHAR(40) NOT NULL,
         file_id INTEGER NOT NULL,
+        hash VARCHAR(40) NOT NULL,
         offset INTEGER NOT NULL,
         size INTEGER NOT NULL,
+        present BOOLEAN NOT NULL,
         PRIMARY KEY(file_id, offset)
     );
+    CREATE INDEX idx_blocks_file_id ON blocks(file_id);
     CREATE INDEX idx_blocks_hash ON blocks(hash);
-    CREATE INDEX idx_blocks_file ON blocks(file_id);
-    CREATE INDEX idx_blocks_file_offset ON blocks(file_id, offset);
+    CREATE INDEX idx_blocks_offset ON blocks(file_id, offset);
+    CREATE INDEX idx_blocks_present ON blocks(file_id, present);
+
+    PRAGMA application_id=0x51367457;
+    PRAGMA user_version=0x00000000;
 ";
 
 fn get_block(
@@ -145,7 +146,9 @@ impl<'a> IndexTransaction<'a> {
                 // Update modification time
                 self.tx.execute(
                     "
-                    UPDATE files SET modified = ? WHERE file_id = ?;
+                    UPDATE files
+                    SET modified = ?, size = NULL, blocks_hash = NULL
+                    WHERE file_id = ?;
                     ",
                     &[&modified as &dyn ToSql, &file_id],
                 )?;
@@ -197,7 +200,9 @@ impl<'a> IndexTransaction<'a> {
             // Update modification time
             self.tx.execute(
                 "
-                UPDATE files SET modified = ? WHERE file_id = ?;
+                UPDATE files
+                SET modified = ?, size = NULL, blocks_hash = NULL
+                WHERE file_id = ?;
                 ",
                 &[&modified as &dyn ToSql, &file_id],
             )?;
@@ -304,8 +309,8 @@ impl<'a> IndexTransaction<'a> {
     ) -> Result<(), Error> {
         self.tx.execute(
             "
-            INSERT INTO blocks(hash, file_id, offset, size)
-            VALUES(?, ?, ?, ?);
+            INSERT INTO blocks(hash, file_id, offset, size, present)
+            VALUES(?, ?, ?, ?, 1);
             ",
             &[
                 &hash as &dyn ToSql,
