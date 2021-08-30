@@ -100,6 +100,29 @@ impl Index {
         }
     }
 
+    /// Try to get a file from its name
+    pub fn get_file(
+        &self,
+        name: &Path,
+    ) -> Result<Option<(u32, chrono::DateTime<chrono::Utc>, HashDigest)>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT file_id, modified, blocks_hash FROM files
+            WHERE name = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
+        if let Some(row) = rows.next() {
+            let row = row?;
+            let file_id = row.get(0);
+            let modified = row.get(1);
+            let blocks_hash = row.get(2);
+            Ok(Some((file_id, modified, blocks_hash)))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Add a file to the index
     ///
     /// This returns a tuple `(file_id, up_to_date)` where `file_id` can be
@@ -111,17 +134,7 @@ impl Index {
         modified: chrono::DateTime<chrono::Utc>,
     ) -> Result<(u32, bool), Error> {
         self.begin()?;
-        let mut stmt = self.db.prepare(
-            "
-            SELECT file_id, modified FROM files
-            WHERE name = ?;
-            ",
-        )?;
-        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
-        if let Some(row) = rows.next() {
-            let row = row?;
-            let file_id: u32 = row.get(0);
-            let old_modified: chrono::DateTime<chrono::Utc> = row.get(1);
+        if let Some((file_id, old_modified, _)) = self.get_file(name)? {
             if old_modified != modified {
                 info!("Resetting file {:?}, modified", name);
                 // Delete blocks
@@ -168,16 +181,7 @@ impl Index {
         modified: chrono::DateTime<chrono::Utc>,
     ) -> Result<u32, Error> {
         self.begin()?;
-        let mut stmt = self.db.prepare(
-            "
-            SELECT file_id, modified FROM files
-            WHERE name = ?;
-            ",
-        )?;
-        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
-        if let Some(row) = rows.next() {
-            let row = row?;
-            let file_id: u32 = row.get(0);
+        if let Some((file_id, _, _)) = self.get_file(name)? {
             info!("Resetting file {:?}", name);
             // Delete blocks
             self.db.execute(
