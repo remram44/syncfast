@@ -348,12 +348,12 @@ pub struct FsSinkWrapper {
 
 impl FsSinkWrapper {
     pub fn new(path: &Path) -> Result<FsSinkWrapper, Error> {
-        let mut index = Index::open(&path.join(".rrsync.idx"))?;
+        let mut index = Index::open(&path.join(".syncfast.idx"))?;
         {
             let mut tx = index.transaction()?;
             info!(
                 "Indexing destination into {:?}...",
-                path.join(".rrsync.idx")
+                path.join(".syncfast.idx")
             );
             tx.index_path(path)?;
             tx.remove_missing_files(path)?;
@@ -377,10 +377,10 @@ pub struct FsSourceWrapper {
 
 impl FsSourceWrapper {
     pub fn new(path: &Path) -> Result<FsSourceWrapper, Error> {
-        let mut index = Index::open(&path.join(".rrsync.idx"))?;
+        let mut index = Index::open(&path.join(".syncfast.idx"))?;
         {
             let mut tx = index.transaction()?;
-            info!("Indexing source into {:?}...", path.join(".rrsync.idx"));
+            info!("Indexing source into {:?}...", path.join(".syncfast.idx"));
             tx.index_path(path)?;
             tx.remove_missing_files(path)?;
             tx.commit()?;

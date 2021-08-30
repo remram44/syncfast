@@ -13,7 +13,7 @@ const SCHEMA: &str = "
         name VARCHAR(8) NOT NULL,
         version VARCHAR(16) NOT NULL
     );
-    INSERT INTO version(name, version) VALUES('rrsync', '0.1');
+    INSERT INTO version(name, version) VALUES('syncfast', '0.1');
 
     CREATE TABLE files(
         file_id INTEGER NOT NULL PRIMARY KEY,
@@ -430,7 +430,7 @@ impl<'a> IndexTransaction<'a> {
             info!("Indexing directory {:?} ({:?})", rel, path);
             for entry in path.read_dir()? {
                 if let Ok(entry) = entry {
-                    if entry.file_name() == ".rrsync.idx" {
+                    if entry.file_name() == ".syncfast.idx" {
                         continue;
                     }
                     self.index_path_rec(root, &rel.join(entry.file_name()))?;

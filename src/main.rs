@@ -1,20 +1,20 @@
 extern crate clap;
 extern crate env_logger;
-extern crate rrsync;
+extern crate syncfast;
 
 use clap::{App, Arg, SubCommand};
 use std::env;
 use std::path::Path;
 
-use rrsync::{Error, Index};
-use rrsync::locations::Location;
-use rrsync::sync::do_sync;
+use syncfast::{Error, Index};
+use syncfast::locations::Location;
+use syncfast::sync::do_sync;
 
 /// Command-line entrypoint
 fn main() {
     // Parse command line
-    let cli = App::new("rrsync")
-        .bin_name("rrsync")
+    let cli = App::new("syncfast")
+        .bin_name("syncfast")
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
@@ -36,7 +36,7 @@ fn main() {
                     Arg::with_name("index-file")
                         .short("x")
                         .takes_value(true)
-                        .default_value("rrsync.idx"),
+                        .default_value("syncfast.idx"),
                 ),
         )
         .subcommand(
@@ -98,10 +98,10 @@ fn main() {
         };
         let mut logger_builder = env_logger::builder();
         logger_builder.filter(None, level);
-        if let Ok(val) = env::var("RRSYNC_LOG") {
+        if let Ok(val) = env::var("SYNCFAST_LOG") {
             logger_builder.parse_filters(&val);
         }
-        if let Ok(val) = env::var("RRSYNC_LOG_STYLE") {
+        if let Ok(val) = env::var("SYNCFAST_LOG_STYLE") {
             logger_builder.parse_write_style(&val);
         }
         logger_builder.init();
@@ -146,7 +146,7 @@ fn main() {
                 }
             };
 
-            let mut source_wrapper: Box<dyn rrsync::sync::SourceWrapper> =
+            let mut source_wrapper: Box<dyn syncfast::sync::SourceWrapper> =
                 match source.open_source() {
                     Ok(o) => o,
                     Err(e) => {
@@ -154,7 +154,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-            let source_obj: Box<dyn rrsync::sync::Source> =
+            let source_obj: Box<dyn syncfast::sync::Source> =
                 match source_wrapper.open() {
                     Ok(o) => o,
                     Err(e) => {
@@ -162,7 +162,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-            let mut sink_wrapper: Box<dyn rrsync::sync::SinkWrapper> =
+            let mut sink_wrapper: Box<dyn syncfast::sync::SinkWrapper> =
                 match dest.open_sink() {
                     Ok(o) => o,
                     Err(e) => {
@@ -170,7 +170,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-            let sink_obj: Box<dyn rrsync::sync::Sink> =
+            let sink_obj: Box<dyn syncfast::sync::Sink> =
                 match sink_wrapper.open() {
                     Ok(o) => o,
                     Err(e) => {

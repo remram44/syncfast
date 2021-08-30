@@ -1,14 +1,14 @@
 [package]
-name = "rrsync"
+name = "syncfast"
 version = "0.1.0"
 authors = ["Remi Rampin <r@remirampin.com>"]
 description = "rsync/rdiff/zsync clone"
-repository = "https://github.com/remram44/rrsync"
-documentation = "https://docs.rs/rrsync/"
+repository = "https://github.com/remram44/syncfast"
+documentation = "https://docs.rs/syncfast/"
 license = "BSD-3-Clause"
 
 [[bin]]
-name = "rrsync"
+name = "syncfast"
 path = "src/main.rs"
 
 [dependencies]

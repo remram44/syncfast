@@ -274,20 +274,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rrsync"
-version = "0.1.0"
-dependencies = [
- "cdchunking 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "chrono 0.4.9 (registry+https://github.com/rust-lang/crates.io-index)",
- "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "env_logger 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "rusqlite 0.16.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "sha1 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "tempfile 3.0.8 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "rusqlite"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -308,6 +294,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "strsim"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "syncfast"
+version = "0.1.0"
+dependencies = [
+ "cdchunking 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "chrono 0.4.9 (registry+https://github.com/rust-lang/crates.io-index)",
+ "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "env_logger 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rusqlite 0.16.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sha1 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tempfile 3.0.8 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "tempfile"

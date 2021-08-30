@@ -1,8 +1,7 @@
-[![Build Status](https://github.com/remram44/rrsync/workflows/Test/badge.svg)](https://github.com/remram44/rrsync/actions)
-[![Crates.io](https://img.shields.io/crates/v/rrsync.svg)](https://crates.io/crates/rrsync)
-[![Documentation](https://docs.rs/rrsync/badge.svg)](https://docs.rs/rrsync)
-[![License](https://img.shields.io/crates/l/rrsync.svg)](https://github.com/remram44/rrsync/blob/master/LICENSE.txt)
-[![Say Thanks!](https://img.shields.io/badge/Say%20Thanks-!-1EAEDB.svg)](https://saythanks.io/to/remram44)
+[![Build Status](https://github.com/remram44/syncfast/workflows/Test/badge.svg)](https://github.com/remram44/syncfast/actions)
+[![Crates.io](https://img.shields.io/crates/v/syncfast.svg)](https://crates.io/crates/syncfast)
+[![Documentation](https://docs.rs/syncfast/badge.svg)](https://docs.rs/syncfast)
+[![License](https://img.shields.io/crates/l/syncfast.svg)](https://github.com/remram44/syncfast/blob/master/LICENSE.txt)
 
 What is this?
 =============
@@ -25,16 +24,16 @@ rsync
 -----
 
 ```
-$ rrsync sync some/folder othermachine:folder
+$ syncfast sync some/folder othermachine:folder
 ```
 
 Pre-computed indices are optional but make the operation faster:
 
 ```
-$ rrsync index -x folder.idx some/folder
+$ syncfast index -x folder.idx some/folder
 $ ssh othermachine \
-  rrsync index -x folder.idx folder
-$ rrsync sync -X folder.idx -x othermachine:folder.idx some/folder othermachine:folder
+  syncfast index -x folder.idx folder
+$ syncfast sync -X folder.idx -x othermachine:folder.idx some/folder othermachine:folder
 ```
 
 rdiff
@@ -42,19 +41,19 @@ rdiff
 
 ```
 # Same as rdiff (signature/delta/patch)
-$ rrsync index -x signature.idx old/folder
-$ rrsync diff -o patch.bin -x signature.idx new/folder
-$ rrsync patch old/folder patch.bin
+$ syncfast index -x signature.idx old/folder
+$ syncfast diff -o patch.bin -x signature.idx new/folder
+$ syncfast patch old/folder patch.bin
 ```
 
 zsync
 -----
 
 ```
-$ rrsync index -x data.tar.rrsync.idx data.tar
-$ rrsync sync -X data.tar.rrsync.idx old/data.tar
+$ syncfast index -x data.tar.syncfast.idx data.tar
+$ syncfast sync -X data.tar.syncfast.idx old/data.tar
 # Or over network
-$ rrsync sync -X http://example.org/data.tar.rrsync.idx old/data.tar
+$ syncfast sync -X http://example.org/data.tar.syncfast.idx old/data.tar
 ```
 
 Notes
