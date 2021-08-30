@@ -49,9 +49,11 @@ impl From<std::io::Error> for Error {
     }
 }
 
+pub const HASH_DIGEST_LEN: usize = 20;
+
 /// Type for the hashes
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct HashDigest([u8; 20]);
+pub struct HashDigest([u8; HASH_DIGEST_LEN]);
 
 impl ToSql for HashDigest {
     fn to_sql(&self) -> Result<ToSqlOutput, rusqlite::Error> {
@@ -98,7 +100,7 @@ impl FromSql for HashDigest {
                     InvalidHashDigest::WrongSize,
                 )))
             } else {
-                let mut bytes = [0u8; 20];
+                let mut bytes = [0u8; HASH_DIGEST_LEN];
                 for (i, byte) in (&mut bytes).iter_mut().enumerate() {
                     *byte = u8::from_str_radix(&s[i * 2 .. i * 2 + 2], 16)
                         .map_err(|_| {
