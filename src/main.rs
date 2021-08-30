@@ -36,7 +36,7 @@ fn main() {
                     Arg::with_name("index-file")
                         .short("x")
                         .takes_value(true)
-                        .default_value("syncfast.idx"),
+                        .default_value(".syncfast.idx"),
                 ),
         )
         .subcommand(
