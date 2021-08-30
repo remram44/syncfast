@@ -406,6 +406,32 @@ impl Index {
                     }
                 }
             }
+
+            // Compute blocks_hash
+            sha1.reset();
+            let mut stmt = self.db.prepare(
+                "
+                SELECT hash FROM blocks WHERE file_id = ?;
+                ",
+            )?;
+            let mut rows = stmt.query(&[file_id])?;
+            loop {
+                match rows.next() {
+                    Some(Ok(row)) => {
+                        let digest: HashDigest = row.get(0);
+                        sha1.update(&digest.0);
+                    }
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break,
+                }
+            }
+            let blocks_digest = HashDigest(sha1.digest().bytes());
+            self.db.execute(
+                "
+                UPDATE files SET blocks_hash = ? WHERE file_id = ?;
+                ",
+                &[&blocks_digest as &dyn ToSql, &file_id],
+            )?;
         }
         Ok(())
     }
@@ -513,5 +539,11 @@ mod tests {
             .expect("get");
         assert_eq!(block3, Some((name.clone(), 44347, 546)),);
         assert_eq!(block3.unwrap().1 - block2.unwrap().1, MAX_BLOCK_SIZE);
+        let file1 = index.get_file(&name).expect("db").expect("get_file");
+        assert_eq!(file1.0, 1);
+        assert_eq!(file1.2, HashDigest(
+            *b"\x84\xC2\x5D\x78\xED\xCD\xB6\x76\x31\x63\
+            \x9C\x43\x60\x4C\xF0\x14\x95\x64\xF0\x44",
+        ));
     }
 }
