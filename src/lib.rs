@@ -10,7 +10,6 @@
 #![forbid(unsafe_code)]
 
 mod index;
-pub mod locations;
 pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};

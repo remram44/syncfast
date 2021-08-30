@@ -22,6 +22,7 @@
 //! which are fed in as they are received.
 
 pub mod fs;
+pub mod locations;
 
 use std::path::{Path, PathBuf};
 

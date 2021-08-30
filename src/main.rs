@@ -7,8 +7,8 @@ use std::env;
 use std::path::Path;
 
 use syncfast::{Error, Index};
-use syncfast::locations::Location;
 use syncfast::sync::do_sync;
+use syncfast::sync::locations::Location;
 
 /// Command-line entrypoint
 fn main() {
