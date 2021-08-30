@@ -1,4 +1,5 @@
 use cdchunking::{ChunkInput, Chunker, ZPAQ};
+use log::{debug, info, warn};
 use rusqlite;
 use rusqlite::{Connection, Transaction};
 use rusqlite::types::ToSql;

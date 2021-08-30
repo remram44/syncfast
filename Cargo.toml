@@ -1,6 +1,7 @@
 [package]
 name = "syncfast"
 version = "0.1.0"
+edition = "2018"
 authors = ["Remi Rampin <r@remirampin.com>"]
 description = "rsync/rdiff/zsync clone"
 repository = "https://github.com/remram44/syncfast"
@@ -15,8 +16,8 @@ path = "src/main.rs"
 cdchunking = "0.2"
 chrono = "0.4"
 clap = "2"
-log = "0.4"
 env_logger = { version = "0.7", default-features = false, features = ["termcolor", "atty", "humantime"] }
+log = "0.4"
 rusqlite = { version = "0.16", features = ["chrono"] }
 sha1 = "0.6"
 

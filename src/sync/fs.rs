@@ -1,6 +1,7 @@
 //! Synchronization from and to local files.
 
 use cdchunking::{Chunker, ZPAQ};
+use log::{debug, info, warn};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::collections::hash_map::{Entry, HashMap};
