@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use crate::Error;
-use crate::sync::{SinkWrapper, SourceWrapper};
-use crate::sync::fs::{FsSinkWrapper, FsSourceWrapper};
+use crate::sync::{Sink, Source};
+use crate::sync::fs::{FsSink, FsSource};
 
 /// SSH remote path, with user and host
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -72,9 +72,9 @@ impl Location {
     }
 
     /// Create a `Sink` to sync to this location
-    pub fn open_sink(&self) -> Result<Box<dyn SinkWrapper>, Error> {
+    pub fn open_sink(&self) -> Result<Box<dyn Sink>, Error> {
         let w = match self {
-            Location::Local(path) => Box::new(FsSinkWrapper::new(path)?),
+            Location::Local(path) => Box::new(FsSink::new(path.to_owned())?),
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
             Location::Http(_url) => {
                 // Shouldn't happen, caught in main.rs
@@ -88,9 +88,9 @@ impl Location {
     }
 
     /// Create a `Source` to sync from this location
-    pub fn open_source(&self) -> Result<Box<dyn SourceWrapper>, Error> {
+    pub fn open_source(&self) -> Result<Box<dyn Source>, Error> {
         let w = match self {
-            Location::Local(path) => Box::new(FsSourceWrapper::new(path)?),
+            Location::Local(path) => Box::new(FsSource::new(path.to_owned())?),
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
             Location::Http(_url) => unimplemented!(), // TODO: HTTP
         };

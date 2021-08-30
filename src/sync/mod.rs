@@ -26,7 +26,7 @@ pub mod fs;
 use std::path::{Path, PathBuf};
 
 use crate::{Error, HashDigest};
-use crate::index::IndexTransaction;
+use crate::index::Index;
 
 /// The sink, representing where the files are being sent.
 ///
@@ -99,11 +99,11 @@ pub trait Source {
 /// Additional methods for `Sink`, through an auto-implemented trait
 pub trait SinkExt {
     /// Feed a whole new index
-    fn new_index(&mut self, index: &IndexTransaction) -> Result<(), Error>;
+    fn new_index(&mut self, index: &Index) -> Result<(), Error>;
 }
 
 impl<R: Sink> SinkExt for R {
-    fn new_index(&mut self, index: &IndexTransaction) -> Result<(), Error> {
+    fn new_index(&mut self, index: &Index) -> Result<(), Error> {
         for (file_id, path, modified) in index.list_files()? {
             self.new_file(&path, modified)?;
             for (hash, _offset, size) in index.list_file_blocks(file_id)? {
@@ -166,34 +166,6 @@ impl<S: Source + ?Sized> Source for Box<S> {
         &mut self,
     ) -> Result<Option<(HashDigest, Vec<u8>)>, Error> {
         (**self).get_next_block()
-    }
-}
-
-/// Wrapper for ownership reasons
-///
-/// This only exists to hold the rusqlite `Connection`, which has to outlive
-/// the transaction used by the `Sink`.
-pub trait SinkWrapper {
-    fn open<'a>(&'a mut self) -> Result<Box<dyn Sink + 'a>, Error>;
-}
-
-impl<RW: SinkWrapper + ?Sized> SinkWrapper for Box<RW> {
-    fn open<'a>(&'a mut self) -> Result<Box<dyn Sink + 'a>, Error> {
-        (**self).open()
-    }
-}
-
-/// Wrapper for ownership reasons
-///
-/// This only exists to hold the rusqlite `Connection`, which has to outlive
-/// the transaction used by the `Source`.
-pub trait SourceWrapper {
-    fn open<'a>(&'a mut self) -> Result<Box<dyn Source + 'a>, Error>;
-}
-
-impl<SW: SourceWrapper + ?Sized> SourceWrapper for Box<SW> {
-    fn open<'a>(&'a mut self) -> Result<Box<dyn Source + 'a>, Error> {
-        (**self).open()
     }
 }
 

@@ -17,7 +17,7 @@ use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
 use std::fmt;
 use std::io::Write;
 
-pub use index::{Index, IndexTransaction};
+pub use index::Index;
 
 /// General error type for this library
 #[derive(Debug)]

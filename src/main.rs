@@ -115,10 +115,9 @@ fn main() {
             let path = Path::new(s_matches.value_of_os("path").unwrap());
 
             let mut index = Index::open(index_filename)?;
-            let mut index_tx = index.transaction()?;
-            index_tx.index_path(path)?;
-            index_tx.remove_missing_files(path)?;
-            index_tx.commit()?;
+            index.index_path(path)?;
+            index.remove_missing_files(path)?;
+            index.commit()?;
 
             Ok(())
         }(),
@@ -146,7 +145,7 @@ fn main() {
                 }
             };
 
-            let mut source_wrapper: Box<dyn syncfast::sync::SourceWrapper> =
+            let source: Box<dyn syncfast::sync::Source> =
                 match source.open_source() {
                     Ok(o) => o,
                     Err(e) => {
@@ -154,15 +153,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-            let source_obj: Box<dyn syncfast::sync::Source> =
-                match source_wrapper.open() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        eprintln!("Failed to prepare source: {}", e);
-                        std::process::exit(1);
-                    }
-                };
-            let mut sink_wrapper: Box<dyn syncfast::sync::SinkWrapper> =
+            let sink: Box<dyn syncfast::sync::Sink> =
                 match dest.open_sink() {
                     Ok(o) => o,
                     Err(e) => {
@@ -170,15 +161,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-            let sink_obj: Box<dyn syncfast::sync::Sink> =
-                match sink_wrapper.open() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        eprintln!("Failed to prepare destination: {}", e);
-                        std::process::exit(1);
-                    }
-                };
-            do_sync(source_obj, sink_obj)
+            do_sync(source, sink)
         }
         _ => {
             cli.print_help().expect("Can't print help");

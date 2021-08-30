@@ -1,7 +1,7 @@
 use cdchunking::{ChunkInput, Chunker, ZPAQ};
 use log::{debug, info, warn};
 use rusqlite;
-use rusqlite::{Connection, Transaction};
+use rusqlite::Connection;
 use rusqlite::types::ToSql;
 use sha1::Sha1;
 use std::fs::File;
@@ -36,36 +36,13 @@ const SCHEMA: &str = "
     PRAGMA user_version=0x00000000;
 ";
 
-fn get_block(
-    db: &Connection,
-    hash: &HashDigest,
-) -> Result<Option<(PathBuf, usize, usize)>, Error> {
-    let mut stmt = db.prepare(
-        "
-        SELECT files.name, blocks.offset, blocks.size
-        FROM blocks
-        INNER JOIN files ON blocks.file_id = files.file_id
-        WHERE blocks.hash = ?;
-        ",
-    )?;
-    let mut rows = stmt.query(&[hash as &dyn ToSql])?;
-    if let Some(row) = rows.next() {
-        let row = row?;
-        let path: String = row.get(0);
-        let path: PathBuf = path.into();
-        let offset: i64 = row.get(1);
-        let offset = offset as usize;
-        let size: i64 = row.get(2);
-        let size = size as usize;
-        Ok(Some((path, offset, size)))
-    } else {
-        Ok(None)
-    }
-}
+pub const ZPAQ_BITS: usize = 13; // 13 bits = 8 KiB block average
+pub const MAX_BLOCK_SIZE: usize = 1 << 15; // 32 KiB
 
 /// Index of files and blocks
 pub struct Index {
     db: Connection,
+    in_transaction: bool,
 }
 
 impl Index {
@@ -77,14 +54,22 @@ impl Index {
             warn!("Database doesn't exist, creating tables...");
             db.execute_batch(SCHEMA)?;
         }
-        Ok(Index { db })
+        Ok(Index { db, in_transaction: false })
     }
 
     /// Open an in-memory index
     pub fn open_in_memory() -> Result<Index, Error> {
         let db = Connection::open_in_memory()?;
         db.execute_batch(SCHEMA)?;
-        Ok(Index { db })
+        Ok(Index { db, in_transaction: false })
+    }
+
+    pub fn begin(&mut self) -> Result<(), Error> {
+        if !self.in_transaction {
+            self.db.execute_batch("BEGIN IMMEDIATE;")?;
+            self.in_transaction = true;
+        }
+        Ok(())
     }
 
     /// Try to find a block in the indexed files
@@ -92,27 +77,29 @@ impl Index {
         &self,
         hash: &HashDigest,
     ) -> Result<Option<(PathBuf, usize, usize)>, Error> {
-        get_block(&self.db, hash)
+        let mut stmt = self.db.prepare(
+            "
+            SELECT files.name, blocks.offset, blocks.size
+            FROM blocks
+            INNER JOIN files ON blocks.file_id = files.file_id
+            WHERE blocks.hash = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[hash as &dyn ToSql])?;
+        if let Some(row) = rows.next() {
+            let row = row?;
+            let path: String = row.get(0);
+            let path: PathBuf = path.into();
+            let offset: i64 = row.get(1);
+            let offset = offset as usize;
+            let size: i64 = row.get(2);
+            let size = size as usize;
+            Ok(Some((path, offset, size)))
+        } else {
+            Ok(None)
+        }
     }
 
-    /// Start a transaction to update the index
-    pub fn transaction(
-        &mut self,
-    ) -> Result<IndexTransaction, rusqlite::Error> {
-        let tx = self.db.transaction()?;
-        Ok(IndexTransaction { tx })
-    }
-}
-
-/// A transaction on the index, for safety and performance
-pub struct IndexTransaction<'a> {
-    tx: Transaction<'a>,
-}
-
-pub const ZPAQ_BITS: usize = 13; // 13 bits = 8 KiB block average
-pub const MAX_BLOCK_SIZE: usize = 1 << 15; // 32 KiB
-
-impl<'a> IndexTransaction<'a> {
     /// Add a file to the index
     ///
     /// This returns a tuple `(file_id, up_to_date)` where `file_id` can be
@@ -123,7 +110,8 @@ impl<'a> IndexTransaction<'a> {
         name: &Path,
         modified: chrono::DateTime<chrono::Utc>,
     ) -> Result<(u32, bool), Error> {
-        let mut stmt = self.tx.prepare(
+        self.begin()?;
+        let mut stmt = self.db.prepare(
             "
             SELECT file_id, modified FROM files
             WHERE name = ?;
@@ -137,14 +125,14 @@ impl<'a> IndexTransaction<'a> {
             if old_modified != modified {
                 info!("Resetting file {:?}, modified", name);
                 // Delete blocks
-                self.tx.execute(
+                self.db.execute(
                     "
                     DELETE FROM blocks WHERE file_id = ?;
                     ",
                     &[&file_id],
                 )?;
                 // Update modification time
-                self.tx.execute(
+                self.db.execute(
                     "
                     UPDATE files
                     SET modified = ?, size = NULL, blocks_hash = NULL
@@ -159,14 +147,14 @@ impl<'a> IndexTransaction<'a> {
             }
         } else {
             info!("Inserting new file {:?}", name);
-            self.tx.execute(
+            self.db.execute(
                 "
                 INSERT INTO files(name, modified)
                 VALUES(?, ?);
                 ",
                 &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
             )?;
-            let file_id = self.tx.last_insert_rowid();
+            let file_id = self.db.last_insert_rowid();
             Ok((file_id as u32, false))
         }
     }
@@ -179,7 +167,8 @@ impl<'a> IndexTransaction<'a> {
         name: &Path,
         modified: chrono::DateTime<chrono::Utc>,
     ) -> Result<u32, Error> {
-        let mut stmt = self.tx.prepare(
+        self.begin()?;
+        let mut stmt = self.db.prepare(
             "
             SELECT file_id, modified FROM files
             WHERE name = ?;
@@ -191,14 +180,14 @@ impl<'a> IndexTransaction<'a> {
             let file_id: u32 = row.get(0);
             info!("Resetting file {:?}", name);
             // Delete blocks
-            self.tx.execute(
+            self.db.execute(
                 "
                 DELETE FROM blocks WHERE file_id = ?;
                 ",
                 &[&file_id],
             )?;
             // Update modification time
-            self.tx.execute(
+            self.db.execute(
                 "
                 UPDATE files
                 SET modified = ?, size = NULL, blocks_hash = NULL
@@ -209,27 +198,28 @@ impl<'a> IndexTransaction<'a> {
             Ok(file_id)
         } else {
             info!("Inserting new file {:?}", name);
-            self.tx.execute(
+            self.db.execute(
                 "
                 INSERT INTO files(name, modified)
                 VALUES(?, ?);
                 ",
                 &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
             )?;
-            let file_id = self.tx.last_insert_rowid();
+            let file_id = self.db.last_insert_rowid();
             Ok(file_id as u32)
         }
     }
 
     /// Remove a file and all its blocks from the index
     pub fn remove_file(&mut self, file_id: u32) -> Result<(), Error> {
-        self.tx.execute(
+        self.begin()?;
+        self.db.execute(
             "
             DELETE FROM blocks WHERE file_id = ?;
             ",
             &[&file_id],
         )?;
-        self.tx.execute(
+        self.db.execute(
             "
             DELETE FROM files WHERE file_id = ?;
             ",
@@ -244,10 +234,11 @@ impl<'a> IndexTransaction<'a> {
         file_id: u32,
         destination: &Path,
     ) -> Result<(), Error> {
+        self.begin()?;
         let destination = destination.to_str().expect("encoding");
 
         // Delete old file
-        self.tx.execute(
+        self.db.execute(
             "
             DELETE FROM blocks WHERE file_id = (
                 SELECT file_id FROM files
@@ -256,7 +247,7 @@ impl<'a> IndexTransaction<'a> {
             ",
             &[destination],
         )?;
-        self.tx.execute(
+        self.db.execute(
             "
             DELETE FROM files WHERE name = ?;
             ",
@@ -264,7 +255,7 @@ impl<'a> IndexTransaction<'a> {
         )?;
 
         // Move new file
-        self.tx.execute(
+        self.db.execute(
             "
             UPDATE files SET name = ?
             WHERE file_id = ?;
@@ -279,7 +270,7 @@ impl<'a> IndexTransaction<'a> {
         &self,
     ) -> Result<Vec<(u32, PathBuf, chrono::DateTime<chrono::Utc>)>, Error>
     {
-        let mut stmt = self.tx.prepare(
+        let mut stmt = self.db.prepare(
             "
             SELECT file_id, name, modified FROM files;
             ",
@@ -307,7 +298,8 @@ impl<'a> IndexTransaction<'a> {
         offset: usize,
         size: usize,
     ) -> Result<(), Error> {
-        self.tx.execute(
+        self.begin()?;
+        self.db.execute(
             "
             INSERT INTO blocks(hash, file_id, offset, size, present)
             VALUES(?, ?, ?, ?, 1);
@@ -330,7 +322,8 @@ impl<'a> IndexTransaction<'a> {
         offset: usize,
         size: usize,
     ) -> Result<(), Error> {
-        self.tx.execute(
+        self.begin()?;
+        self.db.execute(
             "DELETE FROM blocks
             WHERE file_id = ? AND offset + size > ? AND offset < ?;
             ",
@@ -348,7 +341,7 @@ impl<'a> IndexTransaction<'a> {
         &self,
         file_id: u32,
     ) -> Result<Vec<(HashDigest, usize, usize)>, Error> {
-        let mut stmt = self.tx.prepare(
+        let mut stmt = self.db.prepare(
             "
             SELECT hash, offset, size FROM blocks
             WHERE file_id = ?;
@@ -368,14 +361,6 @@ impl<'a> IndexTransaction<'a> {
             }
         }
         Ok(results)
-    }
-
-    /// Try to find a block in the indexed files
-    pub fn get_block(
-        &self,
-        hash: &HashDigest,
-    ) -> Result<Option<(PathBuf, usize, usize)>, Error> {
-        get_block(&self.tx, hash)
     }
 
     /// Cut up a file into blocks and add them to the index
@@ -466,8 +451,12 @@ impl<'a> IndexTransaction<'a> {
     }
 
     /// Commit the transaction
-    pub fn commit(self) -> Result<(), rusqlite::Error> {
-        self.tx.commit()
+    pub fn commit(&mut self) -> Result<(), rusqlite::Error> {
+        if self.in_transaction {
+            self.db.execute_batch("COMMIT")?;
+            self.in_transaction = false;
+        }
+        Ok(())
     }
 }
 
@@ -492,11 +481,8 @@ mod tests {
         file.flush().expect("tempfile");
         let name = Path::new("dir/name").to_path_buf();
         let mut index = Index::open_in_memory().expect("db");
-        {
-            let mut tx = index.transaction().expect("db");
-            tx.index_file(file.path(), &name).expect("index");
-            tx.commit().expect("db");
-        }
+        index.index_file(file.path(), &name).expect("index");
+        index.commit().expect("db");
         assert!(index
             .get_block(&HashDigest(*b"12345678901234567890"))
             .expect("get")

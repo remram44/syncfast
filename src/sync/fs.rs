@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::{Error, HashDigest};
-use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index, IndexTransaction};
-use crate::sync::{IndexEvent, Sink, SinkWrapper, Source, SourceWrapper};
+use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
+use crate::sync::{IndexEvent, Sink, Source};
 
 struct TempFile {
     file: File,
@@ -46,7 +46,6 @@ fn write_block(
     offset: usize,
     block: &[u8],
 ) -> Result<(), Error> {
-    // FIXME: Can you seek past the end?
     file.seek(SeekFrom::Start(offset as u64))?;
     file.write_all(block)?;
     Ok(())
@@ -58,30 +57,38 @@ struct BlockDestination {
 }
 
 /// Local filesystem sink, e.g. `Sink` that writes files.
-pub struct FsSink<'a> {
-    index: IndexTransaction<'a>,
-    root_dir: &'a Path,
+pub struct FsSink {
+    index: Index,
+    root_dir: PathBuf,
     current_file: Option<(usize, Rc<RefCell<TempFile>>)>,
     waiting_blocks: HashMap<HashDigest, Vec<BlockDestination>>,
     blocks_to_request: VecDeque<HashDigest>,
 }
 
-impl<'a> FsSink<'a> {
+impl FsSink {
     /// Create a sink from the (destination) index
-    pub fn new(index: IndexTransaction<'a>, root_dir: &'a Path) -> FsSink<'a> {
-        FsSink {
+    pub fn new(root_dir: PathBuf) -> Result<FsSink, Error> {
+        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
+        info!(
+            "Indexing destination into {:?}...",
+            root_dir.join(".syncfast.idx")
+        );
+        index.index_path(&root_dir)?;
+        index.remove_missing_files(&root_dir)?;
+        index.commit()?;
+        Ok(FsSink {
             index,
             root_dir,
             current_file: None,
             waiting_blocks: HashMap::new(),
             blocks_to_request: VecDeque::new(),
-        }
+        })
     }
 
     fn finish_file(&mut self, file: TempFile) -> Result<(), Error> {
         info!("File complete: {:?}", file.name);
         self.index.move_file(file.temp_file_id, &file.name)?;
-        file.move_to_destination(self.root_dir)?;
+        file.move_to_destination(&self.root_dir)?;
         Ok(())
     }
 
@@ -98,7 +105,7 @@ impl<'a> FsSink<'a> {
     }
 }
 
-impl<'a> Sink for FsSink<'a> {
+impl Sink for FsSink {
     fn new_file(
         &mut self,
         name: &Path,
@@ -266,20 +273,24 @@ impl<'a> Sink for FsSink<'a> {
 }
 
 /// Local filesystem source, e.g. `Source` that reads files
-pub struct FsSource<'a> {
-    index: IndexTransaction<'a>,
-    root_dir: &'a Path,
+pub struct FsSource {
+    index: Index,
+    root_dir: PathBuf,
     files: VecDeque<(u32, PathBuf, chrono::DateTime<chrono::Utc>)>,
     blocks: VecDeque<(HashDigest, usize)>,
     requested_blocks: VecDeque<HashDigest>,
 }
 
-impl<'a> FsSource<'a> {
+impl FsSource {
     /// Create a source from the (source) index
     pub fn new(
-        index: IndexTransaction<'a>,
-        root_dir: &'a Path,
-    ) -> Result<FsSource<'a>, Error> {
+        root_dir: PathBuf,
+    ) -> Result<FsSource, Error> {
+        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
+        info!("Indexing source into {:?}...", root_dir.join(".syncfast.idx"));
+        index.index_path(&root_dir)?;
+        index.remove_missing_files(&root_dir)?;
+        index.commit()?;
         let files: VecDeque<_> = index.list_files()?.into_iter().collect();
         info!("Source indexed, {} files", files.len());
         Ok(FsSource {
@@ -292,7 +303,7 @@ impl<'a> FsSource<'a> {
     }
 }
 
-impl<'a> Source for FsSource<'a> {
+impl Source for FsSource {
     fn next_from_index(&mut self) -> Result<Option<IndexEvent>, Error> {
         // If there are blocks left in current file, return one
         if let Some((hash, size)) = self.blocks.pop_front() {
@@ -339,63 +350,5 @@ impl<'a> Source for FsSource<'a> {
             }
             None => Ok(None),
         }
-    }
-}
-
-pub struct FsSinkWrapper {
-    index: Index,
-    path: PathBuf,
-}
-
-impl FsSinkWrapper {
-    pub fn new(path: &Path) -> Result<FsSinkWrapper, Error> {
-        let mut index = Index::open(&path.join(".syncfast.idx"))?;
-        {
-            let mut tx = index.transaction()?;
-            info!(
-                "Indexing destination into {:?}...",
-                path.join(".syncfast.idx")
-            );
-            tx.index_path(path)?;
-            tx.remove_missing_files(path)?;
-            tx.commit()?;
-        }
-        let path = path.to_path_buf();
-        Ok(FsSinkWrapper { index, path })
-    }
-}
-
-impl SinkWrapper for FsSinkWrapper {
-    fn open<'a>(&'a mut self) -> Result<Box<dyn Sink + 'a>, Error> {
-        Ok(Box::new(FsSink::new(self.index.transaction()?, &self.path)))
-    }
-}
-
-pub struct FsSourceWrapper {
-    index: Index,
-    path: PathBuf,
-}
-
-impl FsSourceWrapper {
-    pub fn new(path: &Path) -> Result<FsSourceWrapper, Error> {
-        let mut index = Index::open(&path.join(".syncfast.idx"))?;
-        {
-            let mut tx = index.transaction()?;
-            info!("Indexing source into {:?}...", path.join(".syncfast.idx"));
-            tx.index_path(path)?;
-            tx.remove_missing_files(path)?;
-            tx.commit()?;
-        }
-        let path = path.to_path_buf();
-        Ok(FsSourceWrapper { index, path })
-    }
-}
-
-impl SourceWrapper for FsSourceWrapper {
-    fn open<'a>(&'a mut self) -> Result<Box<dyn Source + 'a>, Error> {
-        Ok(Box::new(FsSource::new(
-            self.index.transaction()?,
-            &self.path,
-        )?))
     }
 }
