@@ -4,9 +4,8 @@
 pub mod locations;
 //pub mod ssh;
 
-use futures::{FutureExt, select};
-use futures::future::Either;
-use std::future::{Future, Pending, Ready, pending, ready};
+use futures::join;
+use futures::{Sink, Stream, StreamExt};
 use std::pin::Pin;
 
 use crate::{Error, HashDigest};
@@ -84,127 +83,64 @@ pub enum DestinationEvent {
     Complete,
 }
 
-/// The destination representing where the files are being sent.
-///
-/// This is relative to a single process, e.g. the sending side has a
-/// destination encapsulating some network protocol, and the receiving side has
-/// a destination that actually updates files.
-pub trait Destination {
-    fn receive(&mut self) -> Result<Option<DestinationEvent>, Error>;
-    fn send(&mut self, event: SourceEvent) -> Result<(), Error>;
-}
-
 /// The source, representing where the files are coming from.
 ///
 /// This is relative to a single process, e.g. the sending side has a source
 /// that reads from files, and the receiving side has a source that reads from
 /// the network.
-pub trait Source {
-    fn receive(&mut self) -> Result<Option<SourceEvent>, Error>;
-    fn send(&mut self, event: DestinationEvent) -> Result<(), Error>;
+pub trait Source<'a> {
+    type From: Stream<Item=SourceEvent> + Send + 'a;
+    type To: Sink<DestinationEvent, Error=Error> + Send + 'a;
+
+    fn streams(&mut self) -> (Self::From, Self::To);
 }
 
-pub trait AsyncDestination {
-    type RFuture: Future<Output=Result<DestinationEvent, Error>> + Send;
-    type SFuture: Future<Output=Result<(), Error>> + Send;
+/// The destination, representing where the files are being sent.
+///
+/// This is relative to a single process, e.g. the sending side has a
+/// destination encapsulating some network protocol, and the receiving side has
+/// a destination that actually updates files.
+pub trait Destination<'a> {
+    type From: Stream<Item=DestinationEvent> + Send + 'a;
+    type To: Sink<SourceEvent, Error=Error> + Send + 'a;
 
-    fn receive(&mut self) -> Self::RFuture;
-    fn send(&mut self, event: SourceEvent) -> Self::SFuture;
+    fn streams(&mut self) -> (Self::From, Self::To);
 }
 
-pub struct AsyncDestinationAdapter<S: Destination>(S);
+impl<'a, S: Source<'a> + Send + 'a> Source<'a> for Box<S> {
+    type From = Pin<Box<dyn Stream<Item=SourceEvent> + Send + 'a>>;
+    type To = Pin<Box<dyn Sink<DestinationEvent, Error=Error> + Send + 'a>>;
 
-impl<S: Destination> AsyncDestination for AsyncDestinationAdapter<S> {
-    type RFuture = Either<Ready<Result<DestinationEvent, Error>>, Pending<Result<DestinationEvent, Error>>>;
-    type SFuture = Ready<Result<(), Error>>;
-
-    fn receive(&mut self) -> Self::RFuture {
-        match self.0.receive() {
-            Ok(Some(e)) => Either::Left(ready(Ok(e))),
-            Ok(None) => Either::Right(pending()),
-            Err(e) => Either::Left(ready(Err(e))),
-        }
-    }
-
-    fn send(&mut self, event: SourceEvent) -> Self::SFuture {
-        ready(self.0.send(event))
+    fn streams(&mut self) -> (Self::From, Self::To) {
+        let (s_from, s_to) = Source::streams(&mut **self);
+        (s_from.boxed(), Box::pin(s_to))
     }
 }
 
-pub trait AsyncSource<'a> {
-    type RFuture: Future<Output=Result<SourceEvent, Error>> + Send + 'a;
-    type SFuture: Future<Output=Result<(), Error>> + Send;
+impl<'a, S: Destination<'a> + Send + 'a> Destination<'a> for Box<S> {
+    type From = Pin<Box<dyn Stream<Item=DestinationEvent> + Send + 'a>>;
+    type To = Pin<Box<dyn Sink<SourceEvent, Error=Error> + Send + 'a>>;
 
-    fn receive<'b>(&'b mut self) -> Self::RFuture where 'b: 'a;
-    fn send(&mut self, event: DestinationEvent) -> Self::SFuture;
-}
-
-pub struct AsyncSourceAdapter<S: Source>(S);
-
-impl<'a, S: Source> AsyncSource<'a> for AsyncSourceAdapter<S> {
-    type RFuture = Either<Ready<Result<SourceEvent, Error>>, Pending<Result<SourceEvent, Error>>>;
-    type SFuture = Ready<Result<(), Error>>;
-
-    fn receive<'b>(&'b mut self) -> Self::RFuture where 'b: 'a {
-        match self.0.receive() {
-            Ok(Some(e)) => Either::Left(ready(Ok(e))),
-            Ok(None) => Either::Right(pending()),
-            Err(e) => Either::Left(ready(Err(e))),
-        }
-    }
-
-    fn send(&mut self, event: DestinationEvent) -> Self::SFuture {
-        ready(self.0.send(event))
+    fn streams(&mut self) -> (Self::From, Self::To) {
+        let (s_from, s_to) = Destination::streams(&mut **self);
+        (s_from.boxed(), Box::pin(s_to))
     }
 }
 
-trait BoxedAsyncSource<'a> {
-    fn receive(&'a mut self) -> Pin<Box<dyn Future<Output=Result<SourceEvent, Error>> + Send + 'a>>;
-}
-
-impl<'a, S: AsyncSource<'a>> BoxedAsyncSource<'a> for S {
-    fn receive(&'a mut self) -> Pin<Box<dyn Future<Output=Result<SourceEvent, Error>> + Send + 'a>> {
-        (*self).receive().boxed()
-    }
-}
-
-impl<'a> AsyncSource<'a> for Box<dyn BoxedAsyncSource<'a>> {
-    type RFuture = Pin<Box<dyn Future<Output=Result<SourceEvent, Error>> + Send + 'a>>;
-    type SFuture = Pin<Box<dyn Future<Output=Result<(), Error>> + Send + 'a>>;
-
-    fn receive<'b>(&'b mut self) -> Self::RFuture where 'b: 'a {
-        BoxedAsyncSource::receive(&mut *self)
-    }
-
-    fn send(&mut self, event: DestinationEvent) -> Self::SFuture {
-        todo!()
-    }
-}
-
-pub async fn do_sync<
-    'a,
-    SR: Future<Output=Result<SourceEvent, Error>>,
-    SS: Future<Output=Result<(), Error>>,
-    RR: Future<Output=Result<DestinationEvent, Error>>,
-    RS: Future<Output=Result<(), Error>>,
-    S: AsyncSource<'a, RFuture=SR, SFuture=SS> + 'a,
-    R: AsyncDestination<RFuture=RR, SFuture=RS>,
->(
+pub async fn do_sync<'a, S: Source<'a> + 'a, R: Destination<'a> + 'a>(
     mut source: S,
     mut destination: R,
 ) -> Result<(), Error> {
-    let mut done = false;
-    while !done {
-        select! {
-            msg = source.receive().fuse() => destination.send(msg?).await?,
-            msg = destination.receive().fuse() => {
-                let msg = msg?;
-                if let DestinationEvent::Complete = msg {
-                    done = true
-                }
-                source.send(msg).await?
-            }
-        };
-    }
+    let (source_from, source_to) = source.streams();
+    let (destination_from, destination_to) = destination.streams();
+
+    // Concurrently forward streams into sinks
+    let (r1, r2) = join!(
+        source_from.map(|v| Ok(v)).forward(destination_to),
+        destination_from.map(|v| Ok(v)).forward(source_to),
+    );
+    r1?;
+    r2?;
+
     Ok(())
 }
