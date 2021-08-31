@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use crate::Error;
-use crate::sync::{Sink, Source};
-use crate::sync::fs::{FsSink, FsSource};
+use crate::sync::{Destination, Source};
+use crate::sync::fs::{FsDestination, FsSource};
 
 /// SSH remote path, with user and host
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -71,10 +71,10 @@ impl Location {
         }
     }
 
-    /// Create a `Sink` to sync to this location
-    pub fn open_sink(&self) -> Result<Box<dyn Sink>, Error> {
+    /// Create a `Destination` to sync to this location
+    pub fn open_destination(&self) -> Result<Box<dyn Destination>, Error> {
         let w = match self {
-            Location::Local(path) => Box::new(FsSink::new(path.to_owned())?),
+            Location::Local(path) => Box::new(FsDestination::new(path.to_owned())?),
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
             Location::Http(_url) => {
                 // Shouldn't happen, caught in main.rs

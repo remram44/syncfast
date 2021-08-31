@@ -153,15 +153,15 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-            let sink: Box<dyn syncfast::sync::Sink> =
-                match dest.open_sink() {
+            let destination: Box<dyn syncfast::sync::Destination> =
+                match dest.open_destination() {
                     Ok(o) => o,
                     Err(e) => {
                         eprintln!("Failed to open destination: {}", e);
                         std::process::exit(1);
                     }
                 };
-            do_sync(source, sink)
+            do_sync(source, destination)
         }
         _ => {
             cli.print_help().expect("Can't print help");

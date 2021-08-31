@@ -3,23 +3,23 @@
 //! The general architecture is as follows:
 //!
 //! ```plain
-//! +--------+   new index   +------+
-//! |        | +-----------> |      |
-//! | Source |               | Sink |
-//! |        | request block |      |
-//! |        | <-----------+ |      |
-//! |        |               |      |
-//! |        |  send block   |      |
-//! |        | +-----------> |      |
-//! +--------+               +------+
+//! +--------+   new index   +-------------+
+//! |        | +-----------> |             |
+//! | Source |               | Destination |
+//! |        | request block |             |
+//! |        | <-----------+ |             |
+//! |        |               |             |
+//! |        |  send block   |             |
+//! |        | +-----------> |             |
+//! +--------+               +-------------+
 //! ```
 //!
 //! First the old index is computed and loaded in full.
 //!
 //! Then, the new index is fed in either all at once or in a streaming fashion.
 //!
-//! The sink will request blocks that are missing from the destination,
-//! which are fed in as they are received.
+//! The destination will request blocks that are missing, which are fed in as
+//! they are received.
 
 pub mod fs;
 pub mod locations;
@@ -29,12 +29,12 @@ use std::path::{Path, PathBuf};
 use crate::{Error, HashDigest};
 use crate::index::Index;
 
-/// The sink, representing where the files are being sent.
+/// The destination representing where the files are being sent.
 ///
-/// This is relative to a single process, e.g. the sending side has a sink
-/// encapsulating some network protocol, and the receiving side has a sink that
-/// actually updates files.
-pub trait Sink {
+/// This is relative to a single process, e.g. the sending side has a
+/// destination encapsulating some network protocol, and the receiving side has
+/// a destination that actually updates files.
+pub trait Destination {
     /// Start on a new file
     fn new_file(
         &mut self,
@@ -97,13 +97,13 @@ pub trait Source {
     ) -> Result<Option<(HashDigest, Vec<u8>)>, Error>;
 }
 
-/// Additional methods for `Sink`, through an auto-implemented trait
-pub trait SinkExt {
+/// Additional methods for `Destination`, through an auto-implemented trait
+pub trait DestinationExt {
     /// Feed a whole new index
     fn new_index(&mut self, index: &Index) -> Result<(), Error>;
 }
 
-impl<R: Sink> SinkExt for R {
+impl<R: Destination> DestinationExt for R {
     fn new_index(&mut self, index: &Index) -> Result<(), Error> {
         for (file_id, path, modified) in index.list_files()? {
             self.new_file(&path, modified)?;
@@ -116,7 +116,7 @@ impl<R: Sink> SinkExt for R {
     }
 }
 
-impl<R: Sink + ?Sized> Sink for Box<R> {
+impl<R: Destination + ?Sized> Destination for Box<R> {
     fn new_file(
         &mut self,
         path: &Path,
@@ -170,40 +170,40 @@ impl<S: Source + ?Sized> Source for Box<S> {
     }
 }
 
-/// Sync from the source to the sink.
+/// Sync from the source to the destination.
 ///
 /// This takes care of sending instructions and blocks, and the missing block
 /// requests backwards.
-pub fn do_sync<S: Source, R: Sink>(
+pub fn do_sync<S: Source, R: Destination>(
     mut source: S,
-    mut sink: R,
+    mut destination: R,
 ) -> Result<(), Error> {
     let mut instructions = true;
-    while instructions || sink.is_missing_blocks()? {
+    while instructions || destination.is_missing_blocks()? {
         // Things are done in order so that bandwidth is used in a smart way
         // For example, if you block on sending block data, you will have
         // received more block requests in the next loop, and you'll only
         // transmit (sender side) or process (receiver side) index instructions
         // when there's nothing better to do
-        if let Some(hash) = sink.next_requested_block()? {
+        if let Some(hash) = destination.next_requested_block()? {
             // Block requests
             source.request_block(&hash)?; // can block on HTTP receiver side
         } else if let Some((hash, block)) = source.get_next_block()?
         // blocks on receiver side
         {
             // Block data
-            sink.feed_block(&hash, &block)?; // blocks on sender side
+            destination.feed_block(&hash, &block)?; // blocks on sender side
         } else if let Some(event) = source.next_from_index()? {
             // Index instructions
             match event {
                 IndexEvent::NewFile(path, modified) => {
-                    sink.new_file(&path, modified)?
+                    destination.new_file(&path, modified)?
                 }
                 IndexEvent::NewBlock(hash, size) => {
-                    sink.new_block(&hash, size)?
+                    destination.new_block(&hash, size)?
                 }
                 IndexEvent::End => {
-                    sink.end_files()?;
+                    destination.end_files()?;
                     instructions = false;
                 }
             }

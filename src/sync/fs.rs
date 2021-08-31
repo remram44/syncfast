@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use crate::{Error, HashDigest};
 use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
-use crate::sync::{IndexEvent, Sink, Source};
+use crate::sync::{IndexEvent, Destination, Source};
 
 struct TempFile {
     file: File,
@@ -56,8 +56,8 @@ struct BlockDestination {
     offset: usize,
 }
 
-/// Local filesystem sink, e.g. `Sink` that writes files.
-pub struct FsSink {
+/// Local filesystem destination, e.g. `Destination` that writes files.
+pub struct FsDestination {
     index: Index,
     root_dir: PathBuf,
     current_file: Option<(usize, Rc<RefCell<TempFile>>)>,
@@ -65,9 +65,9 @@ pub struct FsSink {
     blocks_to_request: VecDeque<HashDigest>,
 }
 
-impl FsSink {
-    /// Create a sink from the (destination) index
-    pub fn new(root_dir: PathBuf) -> Result<FsSink, Error> {
+impl FsDestination {
+    /// Create a destination from the (destination) index
+    pub fn new(root_dir: PathBuf) -> Result<FsDestination, Error> {
         let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
         info!(
             "Indexing destination into {:?}...",
@@ -76,7 +76,7 @@ impl FsSink {
         index.index_path(&root_dir)?;
         index.remove_missing_files(&root_dir)?;
         index.commit()?;
-        Ok(FsSink {
+        Ok(FsDestination {
             index,
             root_dir,
             current_file: None,
@@ -105,7 +105,7 @@ impl FsSink {
     }
 }
 
-impl Sink for FsSink {
+impl Destination for FsDestination {
     fn new_file(
         &mut self,
         name: &Path,
