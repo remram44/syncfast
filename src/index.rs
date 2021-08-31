@@ -318,28 +318,6 @@ impl Index {
         Ok(())
     }
 
-    /// Add a block, discarding overlapping blocks
-    pub(crate) fn replace_block(
-        &mut self,
-        hash: &HashDigest,
-        file_id: u32,
-        offset: usize,
-        size: usize,
-    ) -> Result<(), Error> {
-        self.begin()?;
-        self.db.execute(
-            "DELETE FROM blocks
-            WHERE file_id = ? AND offset + size > ? AND offset < ?;
-            ",
-            &[
-                &file_id as &dyn ToSql,
-                &(offset as i64),
-                &((offset + size) as i64),
-            ],
-        )?;
-        self.add_block(hash, file_id, offset, size)
-    }
-
     /// Get a list of all the blocks in a specific file
     pub fn list_file_blocks(
         &self,

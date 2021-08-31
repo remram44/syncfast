@@ -1,12 +1,13 @@
 //! This module contains the transfer protocol handlers.
 
-pub mod fs;
+//pub mod fs;
 pub mod locations;
-pub mod ssh;
+//pub mod ssh;
 
 use futures::{FutureExt, select};
 use futures::future::Either;
 use std::future::{Future, Pending, Ready, pending, ready};
+use std::pin::Pin;
 
 use crate::{Error, HashDigest};
 
@@ -104,8 +105,8 @@ pub trait Source {
 }
 
 pub trait AsyncDestination {
-    type RFuture: Future<Output=Result<DestinationEvent, Error>>;
-    type SFuture: Future<Output=Result<(), Error>>;
+    type RFuture: Future<Output=Result<DestinationEvent, Error>> + Send;
+    type SFuture: Future<Output=Result<(), Error>> + Send;
 
     fn receive(&mut self) -> Self::RFuture;
     fn send(&mut self, event: SourceEvent) -> Self::SFuture;
@@ -130,21 +131,21 @@ impl<S: Destination> AsyncDestination for AsyncDestinationAdapter<S> {
     }
 }
 
-pub trait AsyncSource {
-    type RFuture: Future<Output=Result<SourceEvent, Error>>;
-    type SFuture: Future<Output=Result<(), Error>>;
+pub trait AsyncSource<'a> {
+    type RFuture: Future<Output=Result<SourceEvent, Error>> + Send + 'a;
+    type SFuture: Future<Output=Result<(), Error>> + Send;
 
-    fn receive(&mut self) -> Self::RFuture;
+    fn receive<'b>(&'b mut self) -> Self::RFuture where 'b: 'a;
     fn send(&mut self, event: DestinationEvent) -> Self::SFuture;
 }
 
 pub struct AsyncSourceAdapter<S: Source>(S);
 
-impl<S: Source> AsyncSource for AsyncSourceAdapter<S> {
+impl<'a, S: Source> AsyncSource<'a> for AsyncSourceAdapter<S> {
     type RFuture = Either<Ready<Result<SourceEvent, Error>>, Pending<Result<SourceEvent, Error>>>;
     type SFuture = Ready<Result<(), Error>>;
 
-    fn receive(&mut self) -> Self::RFuture {
+    fn receive<'b>(&'b mut self) -> Self::RFuture where 'b: 'a {
         match self.0.receive() {
             Ok(Some(e)) => Either::Left(ready(Ok(e))),
             Ok(None) => Either::Right(pending()),
@@ -157,12 +158,36 @@ impl<S: Source> AsyncSource for AsyncSourceAdapter<S> {
     }
 }
 
+trait BoxedAsyncSource<'a> {
+    fn receive(&'a mut self) -> Pin<Box<dyn Future<Output=Result<SourceEvent, Error>> + Send + 'a>>;
+}
+
+impl<'a, S: AsyncSource<'a>> BoxedAsyncSource<'a> for S {
+    fn receive(&'a mut self) -> Pin<Box<dyn Future<Output=Result<SourceEvent, Error>> + Send + 'a>> {
+        (*self).receive().boxed()
+    }
+}
+
+impl<'a> AsyncSource<'a> for Box<dyn BoxedAsyncSource<'a>> {
+    type RFuture = Pin<Box<dyn Future<Output=Result<SourceEvent, Error>> + Send + 'a>>;
+    type SFuture = Pin<Box<dyn Future<Output=Result<(), Error>> + Send + 'a>>;
+
+    fn receive<'b>(&'b mut self) -> Self::RFuture where 'b: 'a {
+        BoxedAsyncSource::receive(&mut *self)
+    }
+
+    fn send(&mut self, event: DestinationEvent) -> Self::SFuture {
+        todo!()
+    }
+}
+
 pub async fn do_sync<
+    'a,
     SR: Future<Output=Result<SourceEvent, Error>>,
     SS: Future<Output=Result<(), Error>>,
     RR: Future<Output=Result<DestinationEvent, Error>>,
     RS: Future<Output=Result<(), Error>>,
-    S: AsyncSource<RFuture=SR, SFuture=SS>,
+    S: AsyncSource<'a, RFuture=SR, SFuture=SS> + 'a,
     R: AsyncDestination<RFuture=RR, SFuture=RS>,
 >(
     mut source: S,

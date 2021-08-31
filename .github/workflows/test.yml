@@ -9,10 +9,10 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        rust-version: [1.33.0, stable, nightly]
+        rust-version: [1.41.1, stable, nightly]
         include:
         - os: macos-latest
-          rust-version: 1.33.0
+          rust-version: 1.41.1
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v2

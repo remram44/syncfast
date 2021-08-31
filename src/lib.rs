@@ -10,8 +10,8 @@
 #![forbid(unsafe_code)]
 
 mod index;
-//mod streaming_iterator;
-//pub mod sync;
+mod streaming_iterator;
+pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
 use std::fmt;
