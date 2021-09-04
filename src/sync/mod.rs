@@ -131,6 +131,23 @@ impl<'a, S: Destination<'a> + Send + 'a> Destination<'a> for Box<S> {
     }
 }
 
+trait SynchronousSource {
+    type FilesIterator: Iterator<Item=(Vec<u8>, usize, HashDigest)>;
+    type FileBlocksIterator: Iterator<Item=(HashDigest, usize)>;
+
+    fn list_files(&self) -> Self::FilesIterator;
+    fn get_file_blocks(&self, name: &[u8]) -> Self::FileBlocksIterator;
+    fn get_block(&self, hash: &HashDigest) -> Vec<u8>;
+}
+
+trait SynchronousDestination {
+    type MissingBlocksIterator: Iterator<Item=HashDigest>;
+
+    fn add_file(&self, name: &[u8], size: usize, hash: &HashDigest);
+    fn set_file_blocks(&self, path: &[u8], hash: &HashDigest);
+    fn list_missing_blocks(&self) -> Self::MissingBlocksIterator;
+}
+
 pub async fn do_sync<'a, S: Source<'a> + 'a, R: Destination<'a> + 'a>(
     mut source: S,
     mut destination: R,
