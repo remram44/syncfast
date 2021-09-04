@@ -107,6 +107,10 @@ pub trait Destination<'a> {
     fn streams(&mut self) -> (Self::From, Self::To);
 }
 
+type BoxDestination<'a> = Box<dyn Destination<'a, From=Pin<Box<dyn Stream<Item=SourceEvent> + Send + 'a>>, To=Pin<Box<dyn Sink<DestinationEvent, Error=Error> + Send + 'a>>>>;
+
+type BoxSource<'a> = Box<dyn Source<'a, From=Pin<Box<dyn Stream<Item=SourceEvent> + Send + 'a>>, To=Pin<Box<dyn Sink<DestinationEvent, Error=Error> + Send + 'a>>>>;
+
 impl<'a, S: Source<'a> + Send + 'a> Source<'a> for Box<S> {
     type From = Pin<Box<dyn Stream<Item=SourceEvent> + Send + 'a>>;
     type To = Pin<Box<dyn Sink<DestinationEvent, Error=Error> + Send + 'a>>;

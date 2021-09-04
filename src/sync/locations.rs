@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::Error;
-use crate::sync::{Destination, Source};
+use crate::sync::{BoxDestination, BoxSource};
 //use crate::sync::fs::{FsDestination, FsSource};
 
 /// SSH remote path, with user and host
@@ -72,7 +72,7 @@ impl Location {
     }
 
     /// Create a `Destination` to sync to this location
-    pub fn open_destination(&self) -> Result<Box<dyn Destination>, Error> {
+    pub fn open_destination(&self) -> Result<BoxDestination, Error> {
         let w = match self {
             Location::Local(path) => unimplemented!(),//Box::new(FsDestination::new(path.to_owned())?),
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
@@ -88,7 +88,7 @@ impl Location {
     }
 
     /// Create a `Source` to sync from this location
-    pub fn open_source(&self) -> Result<Box<dyn Source>, Error> {
+    pub fn open_source(&self) -> Result<BoxSource, Error> {
         let w = match self {
             Location::Local(path) => unimplemented!(),//Box::new(FsSource::new(path.to_owned())?),
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
