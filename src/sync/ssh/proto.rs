@@ -17,6 +17,64 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+#[derive(Debug, PartialEq)]
+pub enum Message<'a> {
+    FileEntry(&'a [u8], usize, HashDigest),
+    EndFiles,
+    GetFile(&'a [u8]),
+    FileStart(&'a [u8]),
+    FileBlock(HashDigest, usize),
+    FileEnd,
+    GetBlock(HashDigest),
+    BlockData(&'a [u8]),
+    Complete,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum OwnedMessage {
+    FileEntry(Vec<u8>, usize, HashDigest),
+    EndFiles,
+    GetFile(Vec<u8>),
+    FileStart(Vec<u8>),
+    FileBlock(HashDigest, usize),
+    FileEnd,
+    GetBlock(HashDigest),
+    BlockData(Vec<u8>),
+    Complete,
+}
+
+impl<'a> From<Message<'a>> for OwnedMessage {
+    fn from(msg: Message<'a>) -> OwnedMessage {
+        match msg {
+            Message::FileEntry(name, size, digest) => OwnedMessage::FileEntry(name.to_owned(), size, digest),
+            Message::EndFiles => OwnedMessage::EndFiles,
+            Message::GetFile(name) => OwnedMessage::GetFile(name.to_owned()),
+            Message::FileStart(name) => OwnedMessage::FileStart(name.to_owned()),
+            Message::FileBlock(digest, size) => OwnedMessage::FileBlock(digest, size),
+            Message::FileEnd => OwnedMessage::FileEnd,
+            Message::GetBlock(digest) => OwnedMessage::GetBlock(digest),
+            Message::BlockData(data) => OwnedMessage::BlockData(data.to_owned()),
+            Message::Complete => OwnedMessage::Complete,
+        }
+    }
+}
+
+impl<'a> From<&'a OwnedMessage> for Message<'a> {
+    fn from(msg: &'a OwnedMessage) -> Message<'a> {
+        match msg {
+            &OwnedMessage::FileEntry(ref name, size, ref digest) => Message::FileEntry(name, size, digest.clone()),
+            &OwnedMessage::EndFiles => Message::EndFiles,
+            &OwnedMessage::GetFile(ref name) => Message::GetFile(name),
+            &OwnedMessage::FileStart(ref name) => Message::FileStart(name),
+            &OwnedMessage::FileBlock(ref digest, size) => Message::FileBlock(digest.clone(), size),
+            &OwnedMessage::FileEnd => Message::FileEnd,
+            &OwnedMessage::GetBlock(ref digest) => Message::GetBlock(digest.clone()),
+            &OwnedMessage::BlockData(ref data) => Message::BlockData(data),
+            &OwnedMessage::Complete => Message::Complete,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Parser {
     buffer: Vec<u8>,
