@@ -64,7 +64,7 @@ impl Source for FsSource {
         (
             FsSourceFrom {
                 index: &mut self.index,
-                receiver: Box::pin(receiver),
+                receiver: receiver,
                 state: FsSourceState::ListFiles(None),
             }.boxed_local(),
             Box::pin(futures::sink::unfold((), move |_, event: DestinationEvent| {
@@ -87,23 +87,35 @@ enum FsSourceState {
 
 struct FsSourceFrom<'a> {
     index: &'a mut Index,
-    receiver: Pin<Box<Receiver<DestinationEvent>>>,
+    receiver: Receiver<DestinationEvent>,
     state: FsSourceState,
+}
+
+impl<'a> FsSourceFrom<'a> {
+    fn project(self: Pin<&mut Self>) -> (&mut Index, Pin<&mut Receiver<DestinationEvent>>, &mut FsSourceState) {
+        unsafe {
+            let s = self.get_unchecked_mut();
+            (
+                s.index,
+                Pin::new_unchecked(&mut s.receiver),
+                &mut s.state,
+            )
+        }
+    }
 }
 
 impl<'a> Stream for FsSourceFrom<'a> {
     type Item = Result<SourceEvent, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Result<SourceEvent, Error>>> {
-        // This is safe to unpin, so do that
-        let s = Pin::into_inner(self);
+        let (index, mut receiver, state) = self.project();
 
-        match s.state {
+        match *state {
             // Send files list
             FsSourceState::ListFiles(ref mut list) => {
                 // If we don't have data, fetch from database
                 if list.is_none() {
-                    let files = s.index.list_files()?;
+                    let files = index.list_files()?;
                     let mut new_list = VecDeque::with_capacity(files.len());
                     for (_file_id, path, _modified, size, blocks_hash) in files {
                         let path = path
@@ -119,14 +131,14 @@ impl<'a> Stream for FsSourceFrom<'a> {
                 match list.pop_front() {
                     Some((path, size, blocks_hash)) => Poll::Ready(Some(Ok(SourceEvent::FileEntry(path, size, blocks_hash)))),
                     None => {
-                        s.state = FsSourceState::Respond;
+                        *state = FsSourceState::Respond;
                         Poll::Ready(Some(Ok(SourceEvent::EndFiles)))
                     }
                 }
             }
             // Files are sent, respond to requests
             FsSourceState::Respond => {
-                let req = match s.receiver.as_mut().poll_next(cx) {
+                let req = match receiver.as_mut().poll_next(cx) {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(None) => return Poll::Ready(None),
                     Poll::Ready(Some(e)) => e,
@@ -134,20 +146,20 @@ impl<'a> Stream for FsSourceFrom<'a> {
                 match req {
                     DestinationEvent::GetFile(path) => {
                         let path_str = String::from_utf8(path).expect("encoding");
-                        let (file_id, _modified, _blocks_hash) = match s.index.get_file(Path::new(&path_str))? {
+                        let (file_id, _modified, _blocks_hash) = match index.get_file(Path::new(&path_str))? {
                             Some(t) => t,
                             None => return Poll::Ready(Some(Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Requested file is unknown"))))),
                         };
-                        let blocks = s.index.list_file_blocks(file_id)?;
+                        let blocks = index.list_file_blocks(file_id)?;
                         let mut new_blocks = VecDeque::with_capacity(blocks.len());
                         for (hash, _offset, size) in blocks {
                             new_blocks.push_back((hash, size));
                         }
-                        s.state = FsSourceState::ListBlocks(new_blocks);
+                        *state = FsSourceState::ListBlocks(new_blocks);
                         Poll::Ready(Some(Ok(SourceEvent::FileStart(path_str.into_bytes()))))
                     }
                     DestinationEvent::GetBlock(hash) => {
-                        let (path, offset, _size) = match s.index.get_block(&hash)? {
+                        let (path, offset, _size) = match index.get_block(&hash)? {
                             Some(t) => t,
                             None => return Poll::Ready(Some(Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Requested block is unknown"))))),
                         };
@@ -155,7 +167,7 @@ impl<'a> Stream for FsSourceFrom<'a> {
                         Poll::Ready(Some(Ok(SourceEvent::BlockData(data))))
                     }
                     DestinationEvent::Complete => {
-                        s.state = FsSourceState::Done;
+                        *state = FsSourceState::Done;
                         Poll::Ready(None)
                     }
                 }
@@ -165,7 +177,7 @@ impl<'a> Stream for FsSourceFrom<'a> {
                 match list.pop_front() {
                     Some((hash, size)) => Poll::Ready(Some(Ok(SourceEvent::FileBlock(hash, size)))),
                     None => {
-                        s.state = FsSourceState::Respond;
+                        *state = FsSourceState::Respond;
                         Poll::Ready(Some(Ok(SourceEvent::FileEnd)))
                     }
                 }

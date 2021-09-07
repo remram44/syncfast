@@ -7,8 +7,6 @@
 //! additions such as caching file signatures to make repeated synchronizations
 //! faster.
 
-#![forbid(unsafe_code)]
-
 mod index;
 mod streaming_iterator;
 pub mod sync;
