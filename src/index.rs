@@ -272,11 +272,11 @@ impl Index {
     /// Get a list of all the files in the index
     pub fn list_files(
         &self,
-    ) -> Result<Vec<(u32, PathBuf, chrono::DateTime<chrono::Utc>)>, Error>
+    ) -> Result<Vec<(u32, PathBuf, chrono::DateTime<chrono::Utc>, u32, HashDigest)>, Error>
     {
         let mut stmt = self.db.prepare(
             "
-            SELECT file_id, name, modified FROM files;
+            SELECT file_id, name, modified, size, blocks_hash FROM files;
             ",
         )?;
         let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
@@ -285,7 +285,7 @@ impl Index {
             match rows.next() {
                 Some(Ok(row)) => {
                     let path: String = row.get(1);
-                    results.push((row.get(0), path.into(), row.get(2)))
+                    results.push((row.get(0), path.into(), row.get(2), row.get(3), row.get(4)))
                 }
                 Some(Err(e)) => return Err(e.into()),
                 None => break,
@@ -449,7 +449,7 @@ impl Index {
 
     /// List all files and remove those that don't exist on disk
     pub fn remove_missing_files(&mut self, path: &Path) -> Result<(), Error> {
-        for (file_id, file_path, _modified) in self.list_files()? {
+        for (file_id, file_path, _modified, _size, _blocks_hash) in self.list_files()? {
             if !path.join(&file_path).is_file() {
                 info!("Removing missing file {:?}", file_path);
                 self.remove_file(file_id)?;

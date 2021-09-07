@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use crate::Error;
-use crate::sync::{BoxDestination, BoxSource};
-//use crate::sync::fs::{FsDestination, FsSource};
+use crate::sync::{Destination, Source};
+use crate::sync::fs::{FsDestination, FsSource};
 
 /// SSH remote path, with user and host
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -72,9 +72,9 @@ impl Location {
     }
 
     /// Create a `Destination` to sync to this location
-    pub fn open_destination(&self) -> Result<BoxDestination, Error> {
+    pub fn open_destination(&self) -> Result<Box<dyn Destination>, Error> {
         let w = match self {
-            Location::Local(path) => unimplemented!(),//Box::new(FsDestination::new(path.to_owned())?),
+            Location::Local(path) => Box::new(FsDestination::new(path.to_owned())?),
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
             Location::Http(_url) => {
                 // Shouldn't happen, caught in main.rs
@@ -88,9 +88,9 @@ impl Location {
     }
 
     /// Create a `Source` to sync from this location
-    pub fn open_source(&self) -> Result<BoxSource, Error> {
+    pub fn open_source(&self) -> Result<Box<dyn Source>, Error> {
         let w = match self {
-            Location::Local(path) => unimplemented!(),//Box::new(FsSource::new(path.to_owned())?),
+            Location::Local(path) => Box::new(FsSource::new(path.to_owned())?),
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
             Location::Http(_url) => unimplemented!(), // TODO: HTTP
         };

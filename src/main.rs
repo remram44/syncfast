@@ -161,7 +161,13 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-            do_sync(source, destination)
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(
+                do_sync(source, destination)
+            )
         }
         _ => {
             cli.print_help().expect("Can't print help");

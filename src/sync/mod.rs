@@ -1,11 +1,12 @@
 //! This module contains the transfer protocol handlers.
 
-//pub mod fs;
+pub mod fs;
 pub mod locations;
 //pub mod ssh;
 
 use futures::join;
-use futures::{Sink, Stream, StreamExt};
+use futures::sink::Sink;
+use futures::stream::{LocalBoxStream, StreamExt};
 use std::pin::Pin;
 
 use crate::{Error, HashDigest};
@@ -30,11 +31,8 @@ pub enum DestinationEvent {
 /// This is relative to a single process, e.g. the sending side has a source
 /// that reads from files, and the receiving side has a source that reads from
 /// the network.
-pub trait Source<'a> {
-    type From: Stream<Item=SourceEvent> + Send + 'a;
-    type To: Sink<DestinationEvent, Error=Error> + Send + 'a;
-
-    fn streams(&mut self) -> (Self::From, Self::To);
+pub trait Source {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>);
 }
 
 /// The destination, representing where the files are being sent.
@@ -42,34 +40,37 @@ pub trait Source<'a> {
 /// This is relative to a single process, e.g. the sending side has a
 /// destination encapsulating some network protocol, and the receiving side has
 /// a destination that actually updates files.
-pub trait Destination<'a> {
-    type From: Stream<Item=DestinationEvent> + Send + 'a;
-    type To: Sink<SourceEvent, Error=Error> + Send + 'a;
-
-    fn streams(&mut self) -> (Self::From, Self::To);
+pub trait Destination {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>);
 }
 
-type BoxDestination<'a> = Box<dyn Destination<'a, From=Pin<Box<dyn Stream<Item=SourceEvent> + Send + 'a>>, To=Pin<Box<dyn Sink<DestinationEvent, Error=Error> + Send + 'a>>>>;
+// Generic impls for mutable references to trait objects (dynamic dispatch)
 
-type BoxSource<'a> = Box<dyn Source<'a, From=Pin<Box<dyn Stream<Item=SourceEvent> + Send + 'a>>, To=Pin<Box<dyn Sink<DestinationEvent, Error=Error> + Send + 'a>>>>;
-
-impl<'a, S: Source<'a> + Send + 'a> Source<'a> for Box<S> {
-    type From = Pin<Box<dyn Stream<Item=SourceEvent> + Send + 'a>>;
-    type To = Pin<Box<dyn Sink<DestinationEvent, Error=Error> + Send + 'a>>;
-
-    fn streams(&mut self) -> (Self::From, Self::To) {
-        let (s_from, s_to) = Source::streams(&mut **self);
-        (s_from.boxed(), Box::pin(s_to))
+impl Source for &mut dyn Source {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
+        (*self).streams()
     }
 }
 
-impl<'a, S: Destination<'a> + Send + 'a> Destination<'a> for Box<S> {
-    type From = Pin<Box<dyn Stream<Item=DestinationEvent> + Send + 'a>>;
-    type To = Pin<Box<dyn Sink<SourceEvent, Error=Error> + Send + 'a>>;
+impl Destination for &mut dyn Destination {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
+        (*self).streams()
+    }
+}
 
-    fn streams(&mut self) -> (Self::From, Self::To) {
-        let (s_from, s_to) = Destination::streams(&mut **self);
-        (s_from.boxed(), Box::pin(s_to))
+// Generic impls for boxed trait objects (dynamic dispatch)
+
+impl Source for Box<dyn Source> {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
+        let s: &'a mut dyn Source = &mut *self;
+        s.streams()
+    }
+}
+
+impl Destination for Box<dyn Destination> {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
+        let s: &'a mut dyn Destination = &mut *self;
+        s.streams()
     }
 }
 
@@ -90,7 +91,7 @@ trait SynchronousDestination {
     fn list_missing_blocks(&self) -> Self::MissingBlocksIterator;
 }
 
-pub async fn do_sync<'a, S: Source<'a> + 'a, R: Destination<'a> + 'a>(
+pub async fn do_sync<S: Source, R: Destination>(
     mut source: S,
     mut destination: R,
 ) -> Result<(), Error> {
@@ -99,8 +100,8 @@ pub async fn do_sync<'a, S: Source<'a> + 'a, R: Destination<'a> + 'a>(
 
     // Concurrently forward streams into sinks
     let (r1, r2) = join!(
-        source_from.map(|v| Ok(v)).forward(destination_to),
-        destination_from.map(|v| Ok(v)).forward(source_to),
+        source_from.forward(destination_to),
+        destination_from.forward(source_to),
     );
     r1?;
     r2?;
