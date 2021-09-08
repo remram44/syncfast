@@ -4,7 +4,6 @@ use rusqlite;
 use rusqlite::Connection;
 use rusqlite::types::ToSql;
 use sha1::Sha1;
-use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -213,20 +212,6 @@ impl Index {
             let file_id = self.db.last_insert_rowid();
             Ok(file_id as u32)
         }
-    }
-
-    /// Create a file that we'll fill in later
-    pub fn add_temp_file(
-        &mut self,
-        name: &Path,
-    ) -> Result<(u32, PathBuf), Error> {
-        self.begin()?;
-        let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
-        let mut temp_name: OsString = ".syncfast_tmp_".into();
-        temp_name.push(name);
-        let temp_name: PathBuf = temp_name.into();
-        let file_id = self.add_file_overwrite(&temp_name, now)?;
-        Ok((file_id, temp_name))
     }
 
     /// Remove a file and all its blocks from the index

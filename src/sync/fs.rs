@@ -7,6 +7,7 @@ use futures::stream::{LocalBoxStream, StreamExt};
 use log::{log_enabled, debug, info};
 use log::Level::Debug;
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Seek, SeekFrom, Write};
@@ -36,6 +37,19 @@ fn write_block(
     file.seek(SeekFrom::Start(offset as u64))?;
     file.write_all(block)?;
     Ok(())
+}
+
+fn temp_name(name: &Path) -> Result<PathBuf, Error> {
+    let mut temp_path = PathBuf::new();
+    if let Some(parent) = name.parent() {
+        temp_path.push(parent);
+    }
+    let mut temp_name: OsString = ".syncfast_tmp_".into();
+    temp_name.push(name.file_name().ok_or(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"),
+    )?);
+    temp_path.push(temp_name);
+    Ok(temp_path)
 }
 
 pub struct FsSource {
@@ -327,7 +341,9 @@ impl<'a> FsDestinationTo<'a> {
                         }
                     };
                     // Create temporary file
-                    let (_file_id, temp_path) = sink.index.add_temp_file(&path)?;
+                    let temp_path = temp_name(&path)?;
+                    let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+                    sink.index.add_file_overwrite(&temp_path, now)?;
                     debug!("FsDestination: creating temp file {:?}", temp_path);
                     OpenOptions::new()
                         .write(true)
@@ -437,5 +453,18 @@ impl<'a> FsDestinationTo<'a> {
             }
             Ok(sink)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::temp_name;
+
+    #[test]
+    fn test_temp_name() {
+        assert_eq!(temp_name(Path::new("file")).unwrap(), Path::new(".syncfast_tmp_file"));
+        assert_eq!(temp_name(Path::new("dir/file")).unwrap(), Path::new("dir/.syncfast_tmp_file"));
     }
 }
