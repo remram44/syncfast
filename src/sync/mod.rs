@@ -4,6 +4,7 @@ pub mod fs;
 pub mod locations;
 //pub mod ssh;
 
+use log::info;
 use futures::join;
 use futures::sink::Sink;
 use futures::stream::{LocalBoxStream, StreamExt};
@@ -142,8 +143,10 @@ pub async fn do_sync<S: Source, R: Destination>(
     mut source: S,
     mut destination: R,
 ) -> Result<(), Error> {
+    info!("Starting sync...");
     let (source_from, source_to) = source.streams();
     let (destination_from, destination_to) = destination.streams();
+    info!("Streams opened");
 
     // Concurrently forward streams into sinks
     let (r1, r2) = join!(
