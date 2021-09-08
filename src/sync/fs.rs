@@ -345,6 +345,9 @@ impl<'a> FsDestinationTo<'a> {
                     let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
                     sink.index.add_file_overwrite(&temp_path, now)?;
                     debug!("FsDestination: creating temp file {:?}", temp_path);
+                    if let Some(parent) = temp_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
                     OpenOptions::new()
                         .write(true)
                         .truncate(true)
