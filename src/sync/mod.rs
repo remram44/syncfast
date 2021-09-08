@@ -17,7 +17,7 @@ pub enum SourceEvent {
     FileStart(Vec<u8>),
     FileBlock(HashDigest, usize),
     FileEnd,
-    BlockData(Vec<u8>),
+    BlockData(HashDigest, Vec<u8>),
 }
 
 pub enum DestinationEvent {

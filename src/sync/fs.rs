@@ -65,6 +65,7 @@ impl Source for FsSource {
             futures::stream::unfold(
                 Box::pin(FsSourceFrom {
                     index: &mut self.index,
+                    root_dir: &self.root_dir,
                     receiver: receiver,
                     state: FsSourceState::ListFiles(None),
                 }),
@@ -90,16 +91,18 @@ enum FsSourceState {
 
 struct FsSourceFrom<'a> {
     index: &'a mut Index,
+    root_dir: &'a Path,
     receiver: Receiver<DestinationEvent>,
     state: FsSourceState,
 }
 
 impl<'a> FsSourceFrom<'a> {
-    fn project<'b>(self: &'b mut Pin<Box<Self>>) -> (&'b mut Index, Pin<&'b mut Receiver<DestinationEvent>>, &'b mut FsSourceState) where 'a: 'b {
+    fn project<'b>(self: &'b mut Pin<Box<Self>>) -> (&'b mut Index, &'b Path, Pin<&'b mut Receiver<DestinationEvent>>, &'b mut FsSourceState) where 'a: 'b {
         unsafe {
             let s = self.as_mut().get_unchecked_mut();
             (
                 s.index,
+                s.root_dir,
                 Pin::new_unchecked(&mut s.receiver),
                 &mut s.state,
             )
@@ -108,7 +111,7 @@ impl<'a> FsSourceFrom<'a> {
 
     fn stream(mut stream: Pin<Box<FsSourceFrom>>) -> impl Future<Output=Option<(Result<SourceEvent, Error>, Pin<Box<FsSourceFrom>>)>> {
         async {
-            let (index, mut receiver, state) = stream.project();
+            let (index, root_dir, mut receiver, state) = stream.project();
 
             macro_rules! err {
                 ($e:expr) => {
@@ -130,6 +133,7 @@ impl<'a> FsSourceFrom<'a> {
                 FsSourceState::ListFiles(ref mut list) => {
                     // If we don't have data, fetch from database
                     if list.is_none() {
+                        // FIXME: Don't get all files at once, iterate
                         let files = try_!(index.list_files());
                         let mut new_list = VecDeque::with_capacity(files.len());
                         for (_file_id, path, _modified, size, blocks_hash) in files {
@@ -164,6 +168,7 @@ impl<'a> FsSourceFrom<'a> {
                                 Some(t) => t,
                                 None => return err!(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Requested file is unknown"))),
                             };
+                            // FIXME: Don't get all blocks at once, iterate
                             let blocks = try_!(index.list_file_blocks(file_id));
                             let mut new_blocks = VecDeque::with_capacity(blocks.len());
                             for (hash, _offset, size) in blocks {
@@ -177,8 +182,10 @@ impl<'a> FsSourceFrom<'a> {
                                 Some(t) => t,
                                 None => return err!(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Requested block is unknown"))),
                             };
-                            let data = try_!(read_block(&path, offset));
-                            Some((Ok(SourceEvent::BlockData(data)), stream))
+                            let mut fullpath = root_dir.to_owned();
+                            fullpath.push(&path);
+                            let data = try_!(read_block(&fullpath, offset));
+                            Some((Ok(SourceEvent::BlockData(hash, data)), stream))
                         }
                         DestinationEvent::Complete => {
                             *state = FsSourceState::Done;

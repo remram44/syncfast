@@ -82,7 +82,7 @@ impl Index {
             SELECT files.name, blocks.offset, blocks.size
             FROM blocks
             INNER JOIN files ON blocks.file_id = files.file_id
-            WHERE blocks.hash = ?;
+            WHERE blocks.hash = ? AND blocks.present = 1;
             ",
         )?;
         let mut rows = stmt.query(&[hash as &dyn ToSql])?;
