@@ -272,7 +272,7 @@ impl Index {
     /// Get a list of all the files in the index
     pub fn list_files(
         &self,
-    ) -> Result<Vec<(u32, PathBuf, chrono::DateTime<chrono::Utc>, u32, HashDigest)>, Error>
+    ) -> Result<Vec<(u32, PathBuf, chrono::DateTime<chrono::Utc>, usize, HashDigest)>, Error>
     {
         let mut stmt = self.db.prepare(
             "
@@ -285,7 +285,8 @@ impl Index {
             match rows.next() {
                 Some(Ok(row)) => {
                     let path: String = row.get(1);
-                    results.push((row.get(0), path.into(), row.get(2), row.get(3), row.get(4)))
+                    let size: Option<i64> = row.get(3);
+                    results.push((row.get(0), path.into(), row.get(2), size.unwrap_or(0) as usize, row.get(4)))
                 }
                 Some(Err(e)) => return Err(e.into()),
                 None => break,
