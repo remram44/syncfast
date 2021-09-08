@@ -4,6 +4,7 @@ use rusqlite;
 use rusqlite::Connection;
 use rusqlite::types::ToSql;
 use sha1::Sha1;
+use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -214,6 +215,20 @@ impl Index {
         }
     }
 
+    /// Create a file that we'll fill in later
+    pub fn add_temp_file(
+        &mut self,
+        name: &Path,
+    ) -> Result<(u32, PathBuf), Error> {
+        self.begin()?;
+        let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+        let mut temp_name: OsString = ".syncfast_tmp_".into();
+        temp_name.push(name);
+        let temp_name: PathBuf = temp_name.into();
+        let file_id = self.add_file_overwrite(&temp_name, now)?;
+        Ok((file_id, temp_name))
+    }
+
     /// Remove a file and all its blocks from the index
     pub fn remove_file(&mut self, file_id: u32) -> Result<(), Error> {
         self.begin()?;
@@ -337,6 +352,82 @@ impl Index {
                     let offset: i64 = row.get(1);
                     let size: i64 = row.get(2);
                     results.push((row.get(0), offset as usize, size as usize))
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
+    }
+
+    /// Get a list of files for which we don't have contents
+    pub fn list_temp_files(&self) -> Result<Vec<PathBuf>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT name FROM files
+            WHERE substr(name, 1, 14) = '.syncfast_tmp_';
+            ",
+        )?;
+        let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let name: String = row.get(0);
+                    results.push(name.into());
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
+    }
+
+    /// Get a list of blocks that are referenced by files but not present
+    pub fn list_missing_blocks(&self) -> Result<Vec<HashDigest>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT hash FROM blocks
+            WHERE present = 0;
+            ",
+        )?;
+        let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let hash: HashDigest = row.get(0);
+                    results.push(hash);
+                },
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
+    }
+
+    /// Get all locations where a block is to be found
+    pub fn list_block_locations(
+        &self,
+        hash: &HashDigest,
+    ) -> Result<Vec<(PathBuf, usize, usize)>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT files.name, offset, size
+            FROM blocks
+            INNER JOIN files ON files.file_id = blocks.file_id
+            WHERE hash = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[hash])?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let name: String = row.get(0);
+                    let offset: i64 = row.get(1);
+                    let size: i64 = row.get(2);
+                    results.push((name.into(), offset as usize, size as usize));
                 }
                 Some(Err(e)) => return Err(e.into()),
                 None => break,

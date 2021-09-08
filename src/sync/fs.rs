@@ -1,7 +1,7 @@
 //! Synchronization from and to local files.
 
 use cdchunking::{Chunker, ZPAQ};
-use futures::channel::mpsc::{Receiver, channel};
+use futures::channel::mpsc::{Receiver, Sender, channel};
 use futures::sink::{Sink, SinkExt};
 use futures::stream::{LocalBoxStream, StreamExt};
 use log::{debug, info, warn};
@@ -27,10 +27,11 @@ fn read_block(path: &Path, offset: usize) -> Result<Vec<u8>, Error> {
 }
 
 fn write_block(
-    file: &mut File,
+    name: &Path,
     offset: usize,
     block: &[u8],
 ) -> Result<(), Error> {
+    let mut file = OpenOptions::new().write(true).create(true).open(name)?;
     file.seek(SeekFrom::Start(offset as u64))?;
     file.write_all(block)?;
     Ok(())
@@ -235,6 +236,162 @@ impl FsDestination {
 
 impl Destination for FsDestination {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
-        todo!() // FsDestination
+        let (sender, receiver) = channel(1);
+        (
+            futures::stream::unfold(
+                receiver,
+                |mut r| {
+                    async move {
+                        match r.next().await {
+                            Some(v) => Some((Ok(v), r)),
+                            None => None,
+                        }
+                    }
+                },
+            ).boxed_local(),
+            Box::pin(futures::sink::unfold(
+                FsDestinationTo {
+                    index: &mut self.index,
+                    root_dir: &self.root_dir,
+                    sender,
+                    state: FsDestinationState::FilesList,
+                },
+                FsDestinationTo::sink,
+            )),
+        )
+    }
+}
+
+enum FsDestinationState {
+    FilesList,
+    FileBlocks(usize, Option<(u32, usize)>),
+    Blocks(usize),
+    Done,
+}
+
+struct FsDestinationTo<'a> {
+    index: &'a mut Index,
+    root_dir: &'a Path,
+    sender: Sender<DestinationEvent>,
+    state: FsDestinationState,
+}
+
+impl<'a> FsDestinationTo<'a> {
+    fn sink(mut sink: FsDestinationTo, event: SourceEvent) -> impl Future<Output=Result<FsDestinationTo, Error>> {
+        async {
+            match event {
+                SourceEvent::FileEntry(path, _size, blocks_hash) => {
+                    match sink.state {
+                        FsDestinationState::FilesList => {}
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileEntry"))?,
+                    }
+                    let path: PathBuf = String::from_utf8(path)
+                        .expect("encoding")
+                        .into();
+                    match sink.index.get_file(&path)? {
+                        Some((_file_id, _modified, recorded_blocks_hash)) => {
+                            if blocks_hash == recorded_blocks_hash {
+                                return Ok(sink); // File is up to date, do nothing
+                            }
+                        }
+                        None => {}
+                    };
+                    // Create temporary file
+                    let (_file_id, temp_path) = sink.index.add_temp_file(&path)?;
+                    OpenOptions::new()
+                        .write(true)
+                        .truncate(true)
+                        .create(true)
+                        .open(temp_path)?;
+                }
+                SourceEvent::EndFiles => {
+                    match sink.state {
+                        FsDestinationState::FilesList => {}
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileEntry"))?,
+                    }
+                    let mut requested_files = 0;
+                    for name in sink.index.list_temp_files()? {
+                        let name = name
+                            .into_os_string()
+                            .into_string()
+                            .expect("encoding")
+                            .into_bytes();
+                        sink.sender
+                            .send(DestinationEvent::GetFile(name))
+                            .await
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
+                        requested_files += 1;
+                    }
+                    sink.state = FsDestinationState::FileBlocks(requested_files, None);
+                }
+                SourceEvent::FileStart(path) => {
+                    let nb_files = match sink.state {
+                        FsDestinationState::FileBlocks(nb_files, None) if nb_files > 0 => nb_files,
+                        FsDestinationState::FileBlocks(_, Some(_)) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "FileStart before FileEnd"))?,
+                        FsDestinationState::FileBlocks(_, None) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Too many FileStart"))?,
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileStart"))?,
+                    };
+                    let path: PathBuf = String::from_utf8(path)
+                        .expect("encoding")
+                        .into();
+                    let (file_id, _modified, _blocks_hash) = sink.index
+                        .get_file(&path)?
+                        .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, "Unknown file"))?;
+                    sink.state = FsDestinationState::FileBlocks(nb_files, Some((file_id, 0)));
+                }
+                SourceEvent::FileBlock(hash, size) => {
+                    match sink.state {
+                        FsDestinationState::FileBlocks(_, Some((file_id, ref mut offset))) => {
+                            sink.index.add_block(&hash, file_id, *offset, size)?;
+                            *offset += size;
+                        }
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileBlock"))?,
+                    }
+                }
+                SourceEvent::FileEnd => {
+                    match sink.state {
+                        FsDestinationState::FileBlocks(mut nb_files, Some(..)) => {
+                            nb_files -= 1;
+                            sink.state = FsDestinationState::FileBlocks(nb_files, None);
+                            if nb_files == 0 {
+                                let mut nb_blocks = 0;
+                                for hash in sink.index.list_missing_blocks()? {
+                                    sink.sender
+                                        .send(DestinationEvent::GetBlock(hash))
+                                        .await
+                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
+                                    nb_blocks += 1;
+                                }
+                                sink.state = FsDestinationState::Blocks(nb_blocks);
+                            }
+                        }
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileEnd"))?,
+                    }
+                }
+                SourceEvent::BlockData(hash, data) => {
+                    match sink.state {
+                        FsDestinationState::Blocks(mut nb_blocks) => {
+                            nb_blocks -= 1;
+                            sink.state = FsDestinationState::Blocks(nb_blocks);
+                            if nb_blocks == 0 {
+                                debug!("FsDestination: send Complete");
+                                sink.sender
+                                    .send(DestinationEvent::Complete)
+                                    .await
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
+                                sink.state = FsDestinationState::Done;
+                            }
+                        }
+                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected BlockData"))?,
+                    }
+                    for (name, offset, _size) in sink.index.list_block_locations(&hash)? {
+                        let mut fullpath = sink.root_dir.to_owned();
+                        fullpath.push(&name);
+                        write_block(&fullpath, offset, &data)?;
+                    }
+                }
+            }
+            Ok(sink)
+        }
     }
 }
