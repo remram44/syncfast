@@ -109,14 +109,14 @@ impl Destination for &mut dyn Destination {
 
 impl Source for Box<dyn Source> {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
-        let s: &'a mut dyn Source = &mut *self;
+        let s: &'a mut dyn Source = self.as_mut();
         s.streams()
     }
 }
 
 impl Destination for Box<dyn Destination> {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
-        let s: &'a mut dyn Destination = &mut *self;
+        let s: &'a mut dyn Destination = self.as_mut();
         s.streams()
     }
 }
