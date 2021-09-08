@@ -20,10 +20,57 @@ pub enum SourceEvent {
     BlockData(HashDigest, Vec<u8>),
 }
 
+impl std::fmt::Debug for SourceEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            &SourceEvent::FileEntry(ref path, size, ref hash) => write!(
+                f,
+                "FileEntry({}, {}, {})",
+                String::from_utf8_lossy(&path),
+                size,
+                hash,
+            ),
+            &SourceEvent::EndFiles => write!(f, "EndFiles"),
+            &SourceEvent::FileStart(ref path) => write!(
+                f,
+                "FileStart({})",
+                String::from_utf8_lossy(&path),
+            ),
+            &SourceEvent::FileBlock(ref hash, size) => write!(
+                f,
+                "FileBlock({}, {})",
+                hash,
+                size,
+            ),
+            &SourceEvent::FileEnd => write!(f, "FileEnd"),
+            &SourceEvent::BlockData(ref hash, ref data) => write!(
+                f,
+                "BlockData({}, <{} bytes>)",
+                hash,
+                data.len(),
+            ),
+        }
+    }
+}
+
 pub enum DestinationEvent {
     GetFile(Vec<u8>),
     GetBlock(HashDigest),
     Complete,
+}
+
+impl std::fmt::Debug for DestinationEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            &DestinationEvent::GetFile(ref path) => write!(
+                f,
+                "GetFile({})",
+                String::from_utf8_lossy(&path),
+            ),
+            &DestinationEvent::GetBlock(ref hash) => write!(f, "GetBlock({})", hash),
+            &DestinationEvent::Complete => write!(f, "Complete"),
+        }
+    }
 }
 
 /// The source, representing where the files are coming from.
