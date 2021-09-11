@@ -4,7 +4,7 @@ use cdchunking::{Chunker, ZPAQ};
 use futures::channel::mpsc::{Receiver, Sender, channel};
 use futures::sink::{Sink, SinkExt};
 use futures::stream::{LocalBoxStream, StreamExt};
-use log::{log_enabled, debug, info};
+use log::{log_enabled, debug, info, warn};
 use log::Level::Debug;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -13,7 +13,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use crate::{Error, HashDigest, temp_name};
+use crate::{Error, HashDigest, temp_name, untemp_name};
 use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
 use crate::sync::{Destination, DestinationEvent, Source, SourceEvent};
 
@@ -48,8 +48,8 @@ impl FsSource {
     pub fn new(
         root_dir: PathBuf,
     ) -> Result<FsSource, Error> {
-        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
         info!("Indexing source into {:?}...", root_dir.join(".syncfast.idx"));
+        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
         index.index_path(&root_dir)?;
         index.remove_missing_files(&root_dir)?;
         index.commit()?;
@@ -69,15 +69,20 @@ impl Source for FsSource {
                 Box::pin(FsSourceFrom {
                     index: &mut self.index,
                     root_dir: &self.root_dir,
-                    receiver: receiver,
+                    receiver,
                     state: FsSourceState::ListFiles(None),
                 }),
                 FsSourceFrom::stream,
             ).boxed_local(),
-            Box::pin(futures::sink::unfold((), move |_, event: DestinationEvent| {
+            Box::pin(futures::sink::unfold((), move |(), event: DestinationEvent| {
                 let mut sender = sender.clone();
                 async move {
-                    sender.send(event).await.expect("fs channel");
+                    match
+                    sender.send(event).await//.expect("fs channel");
+                    {
+                        Ok(()) => {}
+                        Err(e) => warn!("FsSource: {}", e),
+                    }
                     Ok(())
                 }
             })),
@@ -169,7 +174,10 @@ impl<'a> FsSourceFrom<'a> {
                 // Files are sent, respond to requests
                 FsSourceState::Respond => {
                     let req = match receiver.as_mut().next().await {
-                        None => return None,
+                        None => {
+                            debug!("FsSource: got end of input");
+                            return None;
+                        }
                         Some(e) => e,
                     };
                     debug!("FsSource: recv {:?}", req);
@@ -199,9 +207,7 @@ impl<'a> FsSourceFrom<'a> {
                                 None => return err!(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Requested block is unknown"))),
                             };
                             debug!("FsSource: found block in {:?} offset {}", path, offset);
-                            let mut fullpath = root_dir.to_owned();
-                            fullpath.push(&path);
-                            let data = try_!(read_block(&fullpath, offset));
+                            let data = try_!(read_block(&root_dir.join(&path), offset));
                             debug!("FsSource: send BlockData");
                             Some((Ok(SourceEvent::BlockData(hash, data)), stream))
                         }
@@ -223,6 +229,7 @@ impl<'a> FsSourceFrom<'a> {
                             debug!("FsSource: out of blocks");
                             debug!("FsSource: state=Respond");
                             *state = FsSourceState::Respond;
+                            debug!("FsSource: send FileEnd");
                             Some((Ok(SourceEvent::FileEnd), stream))
                         }
                     }
@@ -242,11 +249,12 @@ pub struct FsDestination {
 impl FsDestination {
     /// Create a destination from the (destination) index
     pub fn new(root_dir: PathBuf) -> Result<FsDestination, Error> {
-        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
         info!(
             "Indexing destination into {:?}...",
             root_dir.join(".syncfast.idx")
         );
+        std::fs::create_dir_all(&root_dir)?;
+        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
         index.index_path(&root_dir)?;
         index.remove_missing_files(&root_dir)?;
         index.commit()?;
@@ -330,6 +338,7 @@ impl<'a> FsDestinationTo<'a> {
                     let temp_path = temp_name(&path)?;
                     let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
                     sink.index.add_file_overwrite(&temp_path, now)?;
+                    let temp_path = sink.root_dir.join(temp_path);
                     debug!("FsDestination: creating temp file {:?}", temp_path);
                     if let Some(parent) = temp_path.parent() {
                         std::fs::create_dir_all(parent)?;
@@ -347,12 +356,13 @@ impl<'a> FsDestinationTo<'a> {
                     }
                     let mut requested_files = 0;
                     for name in sink.index.list_temp_files()? {
+                        let name = untemp_name(&name)?;
+                        debug!("FsDestination: send GetFile({:?})", name);
                         let name = name
                             .into_os_string()
                             .into_string()
                             .expect("encoding")
                             .into_bytes();
-                        debug!("FsDestination: send GetFile");
                         sink.sender
                             .send(DestinationEvent::GetFile(name))
                             .await
@@ -373,9 +383,9 @@ impl<'a> FsDestinationTo<'a> {
                     let path: PathBuf = String::from_utf8(path)
                         .expect("encoding")
                         .into();
-                    let (file_id, _modified, _blocks_hash) = sink.index
-                        .get_file(&path)?
-                        .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, "Unknown file"))?;
+                    let (file_id, _modified) = sink.index
+                        .get_temp_file(&path)?
+                        .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Unknown file {:?}", path)))?;
                     debug!("FsDestination: state=FileBlocks file_id={} offset=0", file_id);
                     sink.state = FsDestinationState::FileBlocks(nb_files, Some((file_id, 0)));
                 }
@@ -383,7 +393,7 @@ impl<'a> FsDestinationTo<'a> {
                     match sink.state {
                         FsDestinationState::FileBlocks(_, Some((file_id, ref mut offset))) => {
                             debug!("FsDestination: adding block");
-                            sink.index.add_block(&hash, file_id, *offset, size)?;
+                            sink.index.add_missing_block(&hash, file_id, *offset, size)?;
                             *offset += size;
                             debug!("FsDestination: offset={}", *offset);
                         }
@@ -391,6 +401,7 @@ impl<'a> FsDestinationTo<'a> {
                     }
                 }
                 SourceEvent::FileEnd => {
+                    sink.index.commit()?;
                     match sink.state {
                         FsDestinationState::FileBlocks(mut nb_files, Some(..)) => {
                             nb_files -= 1;
@@ -433,10 +444,8 @@ impl<'a> FsDestinationTo<'a> {
                         _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected BlockData"))?,
                     }
                     for (name, offset, _size) in sink.index.list_block_locations(&hash)? {
-                        let mut fullpath = sink.root_dir.to_owned();
-                        fullpath.push(&name);
                         debug!("FsDestination: writing block to {:?} offset {}", name, offset);
-                        write_block(&fullpath, offset, &data)?;
+                        write_block(&sink.root_dir.join(&name), offset, &data)?;
                     }
                 }
             }

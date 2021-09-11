@@ -7,7 +7,7 @@ use sha1::Sha1;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::{Error, HashDigest};
+use crate::{Error, HashDigest, temp_name};
 
 const SCHEMA: &str = "
     CREATE TABLE files(
@@ -118,6 +118,29 @@ impl Index {
             let modified = row.get(1);
             let blocks_hash = row.get(2);
             Ok(Some((file_id, modified, blocks_hash)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Try to get a temporary file from its name
+    pub fn get_temp_file(
+        &self,
+        name: &Path,
+    ) -> Result<Option<(u32, chrono::DateTime<chrono::Utc>)>, Error> {
+        let name = temp_name(&name)?;
+        let mut stmt = self.db.prepare(
+            "
+            SELECT file_id, modified FROM files
+            WHERE name = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
+        if let Some(row) = rows.next() {
+            let row = row?;
+            let file_id = row.get(0);
+            let modified = row.get(1);
+            Ok(Some((file_id, modified)))
         } else {
             Ok(None)
         }
@@ -308,6 +331,30 @@ impl Index {
             "
             INSERT INTO blocks(hash, file_id, offset, size, present)
             VALUES(?, ?, ?, ?, 1);
+            ",
+            &[
+                &hash as &dyn ToSql,
+                &file_id,
+                &(offset as i64),
+                &(size as i64),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Add a block to the index, that we haven't yet received
+    pub fn add_missing_block(
+        &mut self,
+        hash: &HashDigest,
+        file_id: u32,
+        offset: usize,
+        size: usize,
+    ) -> Result<(), Error> {
+        self.begin()?;
+        self.db.execute(
+            "
+            INSERT INTO blocks(hash, file_id, offset, size, present)
+            VALUES(?, ?, ?, ?, 0);
             ",
             &[
                 &hash as &dyn ToSql,
