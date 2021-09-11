@@ -6,12 +6,14 @@ use futures::sink::{Sink, SinkExt};
 use futures::stream::{LocalBoxStream, StreamExt};
 use log::{log_enabled, debug, info, warn};
 use log::Level::Debug;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::rc::Rc;
 
 use crate::{Error, HashDigest, temp_name, untemp_name};
 use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
@@ -268,6 +270,7 @@ impl FsDestination {
 impl Destination for FsDestination {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
         debug!("FsDestination: state=FilesList");
+        let index = Rc::new(RefCell::new(&mut self.index));
         let (sender, receiver) = channel(1);
         (
             futures::stream::unfold(
@@ -283,7 +286,7 @@ impl Destination for FsDestination {
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
                 FsDestinationTo {
-                    index: &mut self.index,
+                    index,
                     root_dir: &self.root_dir,
                     sender,
                     state: FsDestinationState::FilesList,
@@ -302,7 +305,7 @@ enum FsDestinationState {
 }
 
 struct FsDestinationTo<'a> {
-    index: &'a mut Index,
+    index: Rc<RefCell<&'a mut Index>>,
     root_dir: &'a Path,
     sender: Sender<DestinationEvent>,
     state: FsDestinationState,
@@ -321,7 +324,8 @@ impl<'a> FsDestinationTo<'a> {
                     let path: PathBuf = String::from_utf8(path)
                         .expect("encoding")
                         .into();
-                    match sink.index.get_file(&path)? {
+                    let file = sink.index.borrow().get_file(&path)?;
+                    match file {
                         Some((_file_id, _modified, recorded_blocks_hash)) => {
                             if blocks_hash == recorded_blocks_hash {
                                 debug!("FsDestination:  file's blocks_hash matches");
@@ -337,7 +341,7 @@ impl<'a> FsDestinationTo<'a> {
                     // Create temporary file
                     let temp_path = temp_name(&path)?;
                     let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
-                    sink.index.add_file_overwrite(&temp_path, now)?;
+                    sink.index.borrow_mut().add_file_overwrite(&temp_path, now)?;
                     let temp_path = sink.root_dir.join(temp_path);
                     debug!("FsDestination: creating temp file {:?}", temp_path);
                     if let Some(parent) = temp_path.parent() {
@@ -355,7 +359,7 @@ impl<'a> FsDestinationTo<'a> {
                         _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileEntry"))?,
                     }
                     let mut requested_files = 0;
-                    for name in sink.index.list_temp_files()? {
+                    for name in sink.index.borrow().list_temp_files()? {
                         let name = untemp_name(&name)?;
                         debug!("FsDestination: send GetFile({:?})", name);
                         let name = name
@@ -383,7 +387,7 @@ impl<'a> FsDestinationTo<'a> {
                     let path: PathBuf = String::from_utf8(path)
                         .expect("encoding")
                         .into();
-                    let (file_id, _modified) = sink.index
+                    let (file_id, _modified) = sink.index.borrow()
                         .get_temp_file(&path)?
                         .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Unknown file {:?}", path)))?;
                     debug!("FsDestination: state=FileBlocks file_id={} offset=0", file_id);
@@ -393,7 +397,7 @@ impl<'a> FsDestinationTo<'a> {
                     match sink.state {
                         FsDestinationState::FileBlocks(_, Some((file_id, ref mut offset))) => {
                             debug!("FsDestination: adding block");
-                            sink.index.add_missing_block(&hash, file_id, *offset, size)?;
+                            sink.index.borrow_mut().add_missing_block(&hash, file_id, *offset, size)?;
                             *offset += size;
                             debug!("FsDestination: offset={}", *offset);
                         }
@@ -401,7 +405,7 @@ impl<'a> FsDestinationTo<'a> {
                     }
                 }
                 SourceEvent::FileEnd => {
-                    sink.index.commit()?;
+                    sink.index.borrow_mut().commit()?;
                     match sink.state {
                         FsDestinationState::FileBlocks(mut nb_files, Some(..)) => {
                             nb_files -= 1;
@@ -409,7 +413,7 @@ impl<'a> FsDestinationTo<'a> {
                             debug!("FsDestination: {} files left", nb_files);
                             if nb_files == 0 {
                                 let mut nb_blocks = 0;
-                                for hash in sink.index.list_missing_blocks()? {
+                                for hash in sink.index.borrow().list_missing_blocks()? {
                                     debug!("FsDestination: send GetBlock");
                                     sink.sender
                                         .send(DestinationEvent::GetBlock(hash))
@@ -443,7 +447,7 @@ impl<'a> FsDestinationTo<'a> {
                         }
                         _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected BlockData"))?,
                     }
-                    for (name, offset, _size) in sink.index.list_block_locations(&hash)? {
+                    for (name, offset, _size) in sink.index.borrow().list_block_locations(&hash)? {
                         debug!("FsDestination: writing block to {:?} offset {}", name, offset);
                         write_block(&sink.root_dir.join(&name), offset, &data)?;
                     }
