@@ -7,14 +7,13 @@ use futures::stream::{LocalBoxStream, StreamExt};
 use log::{log_enabled, debug, info};
 use log::Level::Debug;
 use std::collections::VecDeque;
-use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use crate::{Error, HashDigest};
+use crate::{Error, HashDigest, temp_name};
 use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
 use crate::sync::{Destination, DestinationEvent, Source, SourceEvent};
 
@@ -37,19 +36,6 @@ fn write_block(
     file.seek(SeekFrom::Start(offset as u64))?;
     file.write_all(block)?;
     Ok(())
-}
-
-fn temp_name(name: &Path) -> Result<PathBuf, Error> {
-    let mut temp_path = PathBuf::new();
-    if let Some(parent) = name.parent() {
-        temp_path.push(parent);
-    }
-    let mut temp_name: OsString = ".syncfast_tmp_".into();
-    temp_name.push(name.file_name().ok_or(
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"),
-    )?);
-    temp_path.push(temp_name);
-    Ok(temp_path)
 }
 
 pub struct FsSource {

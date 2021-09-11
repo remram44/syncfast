@@ -12,8 +12,10 @@ mod streaming_iterator;
 pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
+use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 pub use index::Index;
 
@@ -120,6 +122,35 @@ impl fmt::Display for HashDigest {
         }
         Ok(())
     }
+}
+
+fn temp_name(name: &Path) -> Result<PathBuf, Error> {
+    let mut temp_path = PathBuf::new();
+    if let Some(parent) = name.parent() {
+        temp_path.push(parent);
+    }
+    let mut temp_name: OsString = ".syncfast_tmp_".into();
+    temp_name.push(name.file_name().ok_or(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"),
+    )?);
+    temp_path.push(temp_name);
+    Ok(temp_path)
+}
+
+fn untemp_name(name: &Path) -> Result<PathBuf, Error> {
+    let mut temp_path = PathBuf::new();
+    if let Some(parent) = name.parent() {
+        temp_path.push(parent);
+    }
+    let temp_name = name.file_name().ok_or(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"),
+    )?;
+    let temp_name = temp_name.to_str().expect("encoding");
+    let stripped_name = temp_name.strip_prefix(".syncfast_tmp_").ok_or(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Not a temporary path"),
+    )?;
+    temp_path.push(stripped_name);
+    Ok(temp_path)
 }
 
 #[cfg(test)]
