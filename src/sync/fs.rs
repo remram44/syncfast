@@ -2,7 +2,6 @@
 
 use cdchunking::{Chunker, ZPAQ};
 use futures::channel::mpsc::{Receiver, channel};
-use futures::future::FutureExt;
 use futures::sink::{Sink, SinkExt};
 use futures::stream::{LocalBoxStream, StreamExt};
 use log::{log_enabled, debug, info, warn};
@@ -20,6 +19,7 @@ use std::rc::Rc;
 use crate::{Error, HashDigest, temp_name, untemp_name};
 use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
 use crate::sync::{Destination, DestinationEvent, Source, SourceEvent};
+use crate::sync::utils::Condition;
 
 fn read_block(path: &Path, offset: usize) -> Result<Vec<u8>, Error> {
     let mut file = File::open(path)?;
@@ -294,34 +294,6 @@ struct FsDestinationInner<'a> {
     index: &'a mut Index,
     root_dir: &'a Path,
     state: FsDestinationState,
-}
-
-struct Condition {
-    sender: Option<futures::channel::oneshot::Sender<()>>,
-    receiver: Option<futures::channel::oneshot::Receiver<()>>,
-}
-
-impl Default for Condition {
-    fn default() -> Self {
-        let (sender, receiver) = futures::channel::oneshot::channel();
-        Condition { sender: Some(sender), receiver: Some(receiver) }
-    }
-}
-
-type ConditionFuture = futures::future::Map<futures::channel::oneshot::Receiver<()>, fn(Result<(), futures::channel::oneshot::Canceled>)>;
-
-impl Condition {
-    fn set(&mut self) {
-        let sender = self.sender.take().expect("Condition:;set() called twice");
-        sender.send(()).expect("Condition::set()");
-    }
-
-    fn wait(&mut self) -> ConditionFuture {
-        fn error(r: Result<(), futures::channel::oneshot::Canceled>) {
-            r.expect("Condition::wait()");
-        }
-        self.receiver.take().expect("Condition::wait() called twice").map(error)
-    }
 }
 
 enum FsDestinationState {
