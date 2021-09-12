@@ -528,16 +528,3 @@ impl<'a> FsDestinationInner<'a> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::temp_name;
-
-    #[test]
-    fn test_temp_name() {
-        assert_eq!(temp_name(Path::new("file")).unwrap(), Path::new(".syncfast_tmp_file"));
-        assert_eq!(temp_name(Path::new("dir/file")).unwrap(), Path::new("dir/.syncfast_tmp_file"));
-    }
-}

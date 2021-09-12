@@ -157,8 +157,9 @@ fn untemp_name(name: &Path) -> Result<PathBuf, Error> {
 mod tests {
     use rusqlite::types::{FromSql, ToSql, ToSqlOutput, Value, ValueRef};
     use sha1::Sha1;
+    use std::path::Path;
 
-    use super::HashDigest;
+    use super::{HashDigest, temp_name};
 
     #[test]
     fn test_hash_tosql() {
@@ -183,5 +184,11 @@ mod tests {
             "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3",
         ));
         assert_eq!(hash.unwrap(), digest);
+    }
+
+    #[test]
+    fn test_temp_name() {
+        assert_eq!(temp_name(Path::new("file")).unwrap(), Path::new(".syncfast_tmp_file"));
+        assert_eq!(temp_name(Path::new("dir/file")).unwrap(), Path::new("dir/.syncfast_tmp_file"));
     }
 }
