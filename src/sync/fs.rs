@@ -4,7 +4,7 @@ use cdchunking::{Chunker, ZPAQ};
 use futures::channel::mpsc::{Receiver, channel};
 use futures::sink::{Sink, SinkExt};
 use futures::stream::{LocalBoxStream, StreamExt};
-use log::{log_enabled, debug, info, warn};
+use log::{log_enabled, debug, info};
 use log::Level::Debug;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -48,7 +48,7 @@ pub struct FsSource {
 }
 
 impl FsSource {
-    /// Create a source from the (source) index
+    /// Create a source from a directory, indexing it immediately
     pub fn new(
         root_dir: PathBuf,
     ) -> Result<FsSource, Error> {
@@ -66,9 +66,12 @@ impl FsSource {
 
 impl Source for FsSource {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
+        // The source can't handle multiple input events, so we just implement
+        // a Stream, and use a channel for the Sink
         debug!("FsSource: state=ListFiles");
         let (sender, receiver) = channel(1);
         (
+            // Stream generating events using FsSourceFrom::stream
             futures::stream::unfold(
                 Box::pin(FsSourceFrom {
                     index: &mut self.index,
@@ -78,15 +81,11 @@ impl Source for FsSource {
                 }),
                 FsSourceFrom::stream,
             ).boxed_local(),
+            // Simple Sink feeding the channel for the Stream to read
             Box::pin(futures::sink::unfold((), move |(), event: DestinationEvent| {
                 let mut sender = sender.clone();
                 async move {
-                    match
-                    sender.send(event).await//.expect("fs channel");
-                    {
-                        Ok(()) => {}
-                        Err(e) => warn!("FsSource: {}", e),
-                    }
+                    sender.send(event).await.expect("fs channel");
                     Ok(())
                 }
             })),
@@ -110,7 +109,7 @@ struct FsSourceFrom<'a> {
 
 impl<'a> FsSourceFrom<'a> {
     fn project<'b>(self: &'b mut Pin<Box<Self>>) -> (&'b mut Index, &'b Path, Pin<&'b mut Receiver<DestinationEvent>>, &'b mut FsSourceState) where 'a: 'b {
-        unsafe {
+        unsafe { // Required for pin projection
             let s = self.as_mut().get_unchecked_mut();
             (
                 s.index,
@@ -251,7 +250,7 @@ pub struct FsDestination {
 }
 
 impl FsDestination {
-    /// Create a destination from the (destination) index
+    /// Create a destination from a directory, indexing it immediately
     pub fn new(root_dir: PathBuf) -> Result<FsDestination, Error> {
         info!(
             "Indexing destination into {:?}...",
@@ -271,6 +270,10 @@ impl FsDestination {
 
 impl Destination for FsDestination {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
+        // The destination has to handle input while producing output (for
+        // example getting BlockData while sending GetBlock), so it has both a
+        // custom Stream and Sink implementations
+        // State changes are triggered by Sink
         let destination = Rc::new(RefCell::new(FsDestinationInner {
             index: &mut self.index,
             root_dir: &self.root_dir,
@@ -278,10 +281,12 @@ impl Destination for FsDestination {
         }));
         debug!("FsDestination: state=FilesList");
         (
+            // Stream generating events using FsDestination::stream
             futures::stream::unfold(
                 destination.clone(),
                 FsDestinationInner::stream,
             ).boxed_local(),
+            // Sink handling events using FsDestination::sink
             Box::pin(futures::sink::unfold(
                 destination,
                 FsDestinationInner::sink,
@@ -323,22 +328,24 @@ impl<'a> FsDestinationInner<'a> {
     fn stream(inner: Rc<RefCell<FsDestinationInner>>) -> impl Future<Output=Option<(Result<DestinationEvent, Error>, Rc<RefCell<FsDestinationInner>>)>> {
         async move {
             loop {
-                // This works around borrow issue: have to do stuff after inner.borrow_mut() ends
-                enum WhatToDo {
-                    Wait(ConditionFuture),
-                    Return(DestinationEvent),
-                }
-                let what_to_do = match inner.borrow_mut().state {
+                let ret = match inner.borrow_mut().state {
                     // Receive files list
                     FsDestinationState::FilesList { ref mut cond } => {
                         // Nothing to produce, wait for state change
-                        WhatToDo::Wait(cond.wait())
+                        cond.wait().await;
+                        continue;
                     }
                     // Request blocks for files
                     FsDestinationState::GetFiles { ref mut files_to_request, ref mut cond, .. } => {
                         match files_to_request.pop_front() {
-                            Some(name) => WhatToDo::Return(DestinationEvent::GetFile(name)),
+                            Some(name) => {
+                                if log_enabled!(Debug) {
+                                    debug!("FsDestination::stream: send GetFile({:?})", String::from_utf8_lossy(&name));
+                                }
+                                DestinationEvent::GetFile(name)
+                            }
                             None => {
+                                debug!("FsDestination::stream: no more files, waiting...");
                                 cond.wait().await;
                                 continue;
                             }
@@ -348,20 +355,24 @@ impl<'a> FsDestinationInner<'a> {
                     FsDestinationState::GetBlocks { ref mut blocks_to_request, .. } => {
                         match blocks_to_request {
                             Some(ref mut l) => match l.pop_front() {
-                                Some(hash) => WhatToDo::Return(DestinationEvent::GetBlock(hash)),
+                                Some(hash) => {
+                                    debug!("FsDestination::stream: send GetBlock({})", hash);
+                                    DestinationEvent::GetBlock(hash)
+                                }
                                 None => {
+                                    debug!("FsDestination::stream: no more blocks, send Complete");
                                     *blocks_to_request = None;
-                                    WhatToDo::Return(DestinationEvent::Complete)
+                                    DestinationEvent::Complete
                                 }
                             }
-                            None => return None,
+                            None => {
+                                debug!("FsDestination::stream: done");
+                                return None;
+                            }
                         }
                     }
                 };
-                match what_to_do {
-                    WhatToDo::Wait(cond) => cond.await,
-                    WhatToDo::Return(r) => return Some((Ok(r), inner)),
-                }
+                return Some((Ok(ret), inner));
             }
         }
     }
@@ -378,6 +389,8 @@ impl<'a> FsDestinationInner<'a> {
                 let index = &mut inner_.index;
                 let root_dir = &inner_.root_dir;
 
+                debug!("FsDestination::sink: recv {:?}", event);
+
                 match state {
                     // Receive files list
                     FsDestinationState::FilesList { ref mut cond } => {
@@ -390,15 +403,15 @@ impl<'a> FsDestinationInner<'a> {
                                 let add = match file {
                                     Some((_file_id, _modified, recorded_blocks_hash)) => {
                                         if blocks_hash == recorded_blocks_hash {
-                                            debug!("FsDestination:  file's blocks_hash matches");
+                                            debug!("FsDestination::sink:  file's blocks_hash matches");
                                             false // File is up to date, do nothing
                                         } else {
-                                            debug!("FsDestination: file exists but blocks_hash differs");
+                                            debug!("FsDestination::sink: file exists but blocks_hash differs");
                                             true
                                         }
                                     }
                                     None => {
-                                        debug!("FsDestination: file doesn't exist");
+                                        debug!("FsDestination::sink: file doesn't exist");
                                         true
                                     }
                                 };
@@ -408,7 +421,7 @@ impl<'a> FsDestinationInner<'a> {
                                     let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
                                     inner_.index.add_file_overwrite(&temp_path, now)?;
                                     let temp_path = inner_.root_dir.join(temp_path);
-                                    debug!("FsDestination: creating temp file {:?}", temp_path);
+                                    debug!("FsDestination::sink: creating temp file {:?}", temp_path);
                                     if let Some(parent) = temp_path.parent() {
                                         std::fs::create_dir_all(parent)?;
                                     }
@@ -420,6 +433,7 @@ impl<'a> FsDestinationInner<'a> {
                                 }
                             }
                             SourceEvent::EndFiles => {
+                                // FIXME: Don't get all files at once, iterate
                                 let mut files_to_request = VecDeque::new();
                                 for name in index.list_temp_files()? {
                                     let name = untemp_name(&name)?;
@@ -431,6 +445,7 @@ impl<'a> FsDestinationInner<'a> {
                                     files_to_request.push_back(name);
                                 }
                                 let files_to_receive = files_to_request.len();
+                                debug!("FsDestination::sink: state=GetFiles({} files)", files_to_receive);
                                 new_state = Some(FsDestinationState::GetFiles {
                                     files_to_request,
                                     files_to_receive,
@@ -456,18 +471,23 @@ impl<'a> FsDestinationInner<'a> {
                             // FIXME: Don't need to capture all of them by ref,
                             // but necessary for Rust 1.45
                             (Some((ref file_id, ref mut offset)), SourceEvent::FileBlock(ref hash, ref size)) => {
+                                // TODO: Maybe copy it right now?
+                                // TODO: Is file finished? If yes, move to destination, update index
                                 index.add_missing_block(&hash, *file_id, *offset, *size)?;
                                 *offset += *size;
                             }
                             (Some(_), SourceEvent::FileEnd) => {
                                 *file_blocks_id = None;
                                 *files_to_receive -= 1;
+                                debug!("FsDestination::sink: {} files left to receive", *files_to_receive);
                                 if *files_to_receive == 0 {
+                                    // FIXME: Don't get all files at once, iterate
                                     let mut blocks_to_request = VecDeque::new();
                                     for hash in index.list_missing_blocks()? {
                                         blocks_to_request.push_back(hash);
                                     }
                                     let blocks_to_receive = blocks_to_request.len();
+                                    debug!("FsDestination::sink: state=GetBlocks({} blocks)", blocks_to_receive);
                                     new_state = Some(FsDestinationState::GetBlocks {
                                         blocks_to_request: Some(blocks_to_request),
                                         blocks_to_receive,
@@ -483,10 +503,12 @@ impl<'a> FsDestinationInner<'a> {
                         match event {
                             SourceEvent::BlockData(hash, data) => {
                                 for (name, offset, _size) in index.list_block_locations(&hash)? {
-                                    debug!("FsDestination: writing block to {:?} offset {}", name, offset);
+                                    debug!("FsDestination::sink: writing block to {:?} offset {}", name, offset);
                                     write_block(&root_dir.join(&name), offset, &data)?;
+                                    // TODO: Is file finished? If yes, move to destination, update index
                                 }
                                 *blocks_to_receive -= 1; // Do we need to keep track of this?
+                                debug!("FsDestination::sink: {} blocks left to receive", *blocks_to_receive);
                             }
                             _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source").into()),
                         }
