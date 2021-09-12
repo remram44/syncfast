@@ -481,9 +481,11 @@ impl<'a> FsDestinationInner<'a> {
                                     .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Unknown file {:?}", path)))?;
                                 *file_blocks_id = Some((file_id, 0))
                             }
-                            (Some((file_id, ref mut offset)), SourceEvent::FileBlock(hash, size)) => {
-                                index.add_missing_block(&hash, file_id, *offset, size)?;
-                                *offset += size;
+                            // FIXME: Don't need to capture all of them by ref,
+                            // but necessary for Rust 1.45
+                            (Some((ref file_id, ref mut offset)), SourceEvent::FileBlock(ref hash, ref size)) => {
+                                index.add_missing_block(&hash, *file_id, *offset, *size)?;
+                                *offset += *size;
                             }
                             (Some(_), SourceEvent::FileEnd) => {
                                 *file_blocks_id = None;
