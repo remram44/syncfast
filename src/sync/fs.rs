@@ -1,7 +1,8 @@
 //! Synchronization from and to local files.
 
 use cdchunking::{Chunker, ZPAQ};
-use futures::channel::mpsc::{Receiver, Sender, channel};
+use futures::channel::mpsc::{Receiver, channel};
+use futures::future::FutureExt;
 use futures::sink::{Sink, SinkExt};
 use futures::stream::{LocalBoxStream, StreamExt};
 use log::{log_enabled, debug, info, warn};
@@ -11,6 +12,7 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Seek, SeekFrom, Write};
+use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
@@ -269,191 +271,258 @@ impl FsDestination {
 
 impl Destination for FsDestination {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
+        let destination = Rc::new(RefCell::new(FsDestinationInner {
+            index: &mut self.index,
+            root_dir: &self.root_dir,
+            state: FsDestinationState::FilesList { cond: Default::default() },
+        }));
         debug!("FsDestination: state=FilesList");
-        let index = Rc::new(RefCell::new(&mut self.index));
-        let (sender, receiver) = channel(1);
         (
             futures::stream::unfold(
-                receiver,
-                |mut r| {
-                    async move {
-                        match r.next().await {
-                            Some(v) => Some((Ok(v), r)),
-                            None => None,
-                        }
-                    }
-                },
+                destination.clone(),
+                FsDestinationInner::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                FsDestinationTo {
-                    index,
-                    root_dir: &self.root_dir,
-                    sender,
-                    state: FsDestinationState::FilesList,
-                },
-                FsDestinationTo::sink,
+                destination,
+                FsDestinationInner::sink,
             )),
         )
     }
 }
 
-enum FsDestinationState {
-    FilesList,
-    FileBlocks(usize, Option<(u32, usize)>),
-    Blocks(usize),
-    Done,
-}
-
-struct FsDestinationTo<'a> {
-    index: Rc<RefCell<&'a mut Index>>,
+struct FsDestinationInner<'a> {
+    index: &'a mut Index,
     root_dir: &'a Path,
-    sender: Sender<DestinationEvent>,
     state: FsDestinationState,
 }
 
-impl<'a> FsDestinationTo<'a> {
-    fn sink(mut sink: FsDestinationTo, event: SourceEvent) -> impl Future<Output=Result<FsDestinationTo, Error>> {
-        async {
-            debug!("FsDestination: recv {:?}", event);
-            match event {
-                SourceEvent::FileEntry(path, _size, blocks_hash) => {
-                    match sink.state {
-                        FsDestinationState::FilesList => {}
-                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileEntry"))?,
+struct Condition {
+    sender: Option<futures::channel::oneshot::Sender<()>>,
+    receiver: Option<futures::channel::oneshot::Receiver<()>>,
+}
+
+impl Default for Condition {
+    fn default() -> Self {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        Condition { sender: Some(sender), receiver: Some(receiver) }
+    }
+}
+
+type ConditionFuture = futures::future::Map<futures::channel::oneshot::Receiver<()>, fn(Result<(), futures::channel::oneshot::Canceled>)>;
+
+impl Condition {
+    fn set(&mut self) {
+        let sender = self.sender.take().expect("Condition:;set() called twice");
+        sender.send(()).expect("Condition::set()");
+    }
+
+    fn wait(&mut self) -> ConditionFuture {
+        fn error(r: Result<(), futures::channel::oneshot::Canceled>) {
+            r.expect("Condition::wait()");
+        }
+        self.receiver.take().expect("Condition::wait() called twice").map(error)
+    }
+}
+
+enum FsDestinationState {
+    FilesList {
+        /// Sink indicates state change (`SourceEvent::EndFiles`)
+        cond: Condition,
+    },
+    GetFiles {
+        /// List of files to request the blocks of
+        files_to_request: VecDeque<Vec<u8>>,
+        /// Number of files to receive
+        files_to_receive: usize,
+        /// Sink indicates state change (got `SourceEvent::FileEnd` and no more files_to_request)
+        cond: Condition,
+        /// file_id and offset for the blocks we're receiving (from previous FileStart)
+        file_blocks_id: Option<(u32, usize)>,
+    },
+    GetBlocks {
+        /// List of blocks to request, None if we've sent `DestinationEvent::Complete`
+        blocks_to_request: Option<VecDeque<HashDigest>>,
+        /// Number of blocks to receive
+        blocks_to_receive: usize,
+    },
+}
+
+impl<'a> FsDestinationInner<'a> {
+    fn stream(inner: Rc<RefCell<FsDestinationInner>>) -> impl Future<Output=Option<(Result<DestinationEvent, Error>, Rc<RefCell<FsDestinationInner>>)>> {
+        async move {
+            loop {
+                // This works around borrow issue: have to do stuff after inner.borrow_mut() ends
+                enum WhatToDo {
+                    Wait(ConditionFuture),
+                    Return(DestinationEvent),
+                }
+                let what_to_do = match inner.borrow_mut().state {
+                    // Receive files list
+                    FsDestinationState::FilesList { ref mut cond } => {
+                        // Nothing to produce, wait for state change
+                        WhatToDo::Wait(cond.wait())
                     }
-                    let path: PathBuf = String::from_utf8(path)
-                        .expect("encoding")
-                        .into();
-                    let file = sink.index.borrow().get_file(&path)?;
-                    match file {
-                        Some((_file_id, _modified, recorded_blocks_hash)) => {
-                            if blocks_hash == recorded_blocks_hash {
-                                debug!("FsDestination:  file's blocks_hash matches");
-                                return Ok(sink); // File is up to date, do nothing
-                            } else {
-                                debug!("FsDestination: file exists but blocks_hash differs");
+                    // Request blocks for files
+                    FsDestinationState::GetFiles { ref mut files_to_request, ref mut cond, .. } => {
+                        match files_to_request.pop_front() {
+                            Some(name) => WhatToDo::Return(DestinationEvent::GetFile(name)),
+                            None => {
+                                cond.wait().await;
+                                continue;
                             }
                         }
-                        None => {
-                            debug!("FsDestination: file doesn't exist");
-                        }
-                    };
-                    // Create temporary file
-                    let temp_path = temp_name(&path)?;
-                    let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
-                    sink.index.borrow_mut().add_file_overwrite(&temp_path, now)?;
-                    let temp_path = sink.root_dir.join(temp_path);
-                    debug!("FsDestination: creating temp file {:?}", temp_path);
-                    if let Some(parent) = temp_path.parent() {
-                        std::fs::create_dir_all(parent)?;
                     }
-                    OpenOptions::new()
-                        .write(true)
-                        .truncate(true)
-                        .create(true)
-                        .open(temp_path)?;
-                }
-                SourceEvent::EndFiles => {
-                    match sink.state {
-                        FsDestinationState::FilesList => {}
-                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileEntry"))?,
-                    }
-                    let mut requested_files = 0;
-                    for name in sink.index.borrow().list_temp_files()? {
-                        let name = untemp_name(&name)?;
-                        debug!("FsDestination: send GetFile({:?})", name);
-                        let name = name
-                            .into_os_string()
-                            .into_string()
-                            .expect("encoding")
-                            .into_bytes();
-                        sink.sender
-                            .send(DestinationEvent::GetFile(name))
-                            .await
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
-                        requested_files += 1;
-                    }
-                    debug!("FsDestination: requesting the blocks of {} files", requested_files);
-                    debug!("FsDestination: state=FileBlocks");
-                    sink.state = FsDestinationState::FileBlocks(requested_files, None);
-                }
-                SourceEvent::FileStart(path) => {
-                    let nb_files = match sink.state {
-                        FsDestinationState::FileBlocks(nb_files, None) if nb_files > 0 => nb_files,
-                        FsDestinationState::FileBlocks(_, Some(_)) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "FileStart before FileEnd"))?,
-                        FsDestinationState::FileBlocks(_, None) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Too many FileStart"))?,
-                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileStart"))?,
-                    };
-                    let path: PathBuf = String::from_utf8(path)
-                        .expect("encoding")
-                        .into();
-                    let (file_id, _modified) = sink.index.borrow()
-                        .get_temp_file(&path)?
-                        .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Unknown file {:?}", path)))?;
-                    debug!("FsDestination: state=FileBlocks file_id={} offset=0", file_id);
-                    sink.state = FsDestinationState::FileBlocks(nb_files, Some((file_id, 0)));
-                }
-                SourceEvent::FileBlock(hash, size) => {
-                    match sink.state {
-                        FsDestinationState::FileBlocks(_, Some((file_id, ref mut offset))) => {
-                            debug!("FsDestination: adding block");
-                            sink.index.borrow_mut().add_missing_block(&hash, file_id, *offset, size)?;
-                            *offset += size;
-                            debug!("FsDestination: offset={}", *offset);
-                        }
-                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileBlock"))?,
-                    }
-                }
-                SourceEvent::FileEnd => {
-                    sink.index.borrow_mut().commit()?;
-                    match sink.state {
-                        FsDestinationState::FileBlocks(mut nb_files, Some(..)) => {
-                            nb_files -= 1;
-                            sink.state = FsDestinationState::FileBlocks(nb_files, None);
-                            debug!("FsDestination: {} files left", nb_files);
-                            if nb_files == 0 {
-                                let mut nb_blocks = 0;
-                                for hash in sink.index.borrow().list_missing_blocks()? {
-                                    debug!("FsDestination: send GetBlock");
-                                    sink.sender
-                                        .send(DestinationEvent::GetBlock(hash))
-                                        .await
-                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
-                                    nb_blocks += 1;
+                    // Request block data
+                    FsDestinationState::GetBlocks { ref mut blocks_to_request, .. } => {
+                        match blocks_to_request {
+                            Some(ref mut l) => match l.pop_front() {
+                                Some(hash) => WhatToDo::Return(DestinationEvent::GetBlock(hash)),
+                                None => {
+                                    *blocks_to_request = None;
+                                    WhatToDo::Return(DestinationEvent::Complete)
                                 }
-                                debug!("FsDestination: requesting {} blocks", nb_blocks);
-                                debug!("FsDestination: state=Blocks");
-                                sink.state = FsDestinationState::Blocks(nb_blocks);
                             }
+                            None => return None,
                         }
-                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected FileEnd"))?,
                     }
-                }
-                SourceEvent::BlockData(hash, data) => {
-                    match sink.state {
-                        FsDestinationState::Blocks(mut nb_blocks) => {
-                            nb_blocks -= 1;
-                            sink.state = FsDestinationState::Blocks(nb_blocks);
-                            debug!("FsDestination: {} blocks left", nb_blocks);
-                            if nb_blocks == 0 {
-                                debug!("FsDestination: send Complete");
-                                sink.sender
-                                    .send(DestinationEvent::Complete)
-                                    .await
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
-                                debug!("FsDestination: state=Done");
-                                sink.state = FsDestinationState::Done;
-                            }
-                        }
-                        _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected BlockData"))?,
-                    }
-                    for (name, offset, _size) in sink.index.borrow().list_block_locations(&hash)? {
-                        debug!("FsDestination: writing block to {:?} offset {}", name, offset);
-                        write_block(&sink.root_dir.join(&name), offset, &data)?;
-                    }
+                };
+                match what_to_do {
+                    WhatToDo::Wait(cond) => cond.await,
+                    WhatToDo::Return(r) => return Some((Ok(r), inner)),
                 }
             }
-            Ok(sink)
+        }
+    }
+
+    fn sink(inner: Rc<RefCell<FsDestinationInner>>, event: SourceEvent) -> impl Future<Output=Result<Rc<RefCell<FsDestinationInner>>, Error>> {
+        async move {
+            {
+                let mut inner_: std::cell::RefMut<FsDestinationInner> = inner.borrow_mut();
+                let inner_: &mut FsDestinationInner = inner_.deref_mut();
+
+                // Can't mutably borrow more than once
+                let mut new_state: Option<FsDestinationState> = None;
+                let state = &mut inner_.state;
+                let index = &mut inner_.index;
+                let root_dir = &inner_.root_dir;
+
+                match state {
+                    // Receive files list
+                    FsDestinationState::FilesList { ref mut cond } => {
+                        match event {
+                            SourceEvent::FileEntry(path, _size, blocks_hash) => {
+                                let path: PathBuf = String::from_utf8(path)
+                                    .expect("encoding")
+                                    .into();
+                                let file = inner_.index.get_file(&path)?;
+                                let add = match file {
+                                    Some((_file_id, _modified, recorded_blocks_hash)) => {
+                                        if blocks_hash == recorded_blocks_hash {
+                                            debug!("FsDestination:  file's blocks_hash matches");
+                                            false // File is up to date, do nothing
+                                        } else {
+                                            debug!("FsDestination: file exists but blocks_hash differs");
+                                            true
+                                        }
+                                    }
+                                    None => {
+                                        debug!("FsDestination: file doesn't exist");
+                                        true
+                                    }
+                                };
+                                if add {
+                                    // Create temporary file
+                                    let temp_path = temp_name(&path)?;
+                                    let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+                                    inner_.index.add_file_overwrite(&temp_path, now)?;
+                                    let temp_path = inner_.root_dir.join(temp_path);
+                                    debug!("FsDestination: creating temp file {:?}", temp_path);
+                                    if let Some(parent) = temp_path.parent() {
+                                        std::fs::create_dir_all(parent)?;
+                                    }
+                                    OpenOptions::new()
+                                        .write(true)
+                                        .truncate(true)
+                                        .create(true)
+                                        .open(temp_path)?;
+                                }
+                            }
+                            SourceEvent::EndFiles => {
+                                let mut files_to_request = VecDeque::new();
+                                for name in index.list_temp_files()? {
+                                    let name = untemp_name(&name)?;
+                                    let name = name
+                                        .into_os_string()
+                                        .into_string()
+                                        .expect("encoding")
+                                        .into_bytes();
+                                    files_to_request.push_back(name);
+                                }
+                                let files_to_receive = files_to_request.len();
+                                new_state = Some(FsDestinationState::GetFiles {
+                                    files_to_request,
+                                    files_to_receive,
+                                    cond: Default::default(),
+                                    file_blocks_id: None,
+                                });
+                                cond.set();
+                            }
+                            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source").into()),
+                        }
+                    }
+                    // Receive blocks for files
+                    FsDestinationState::GetFiles { ref mut cond, ref mut file_blocks_id, ref mut files_to_receive, .. } => {
+                        match (*file_blocks_id, event) {
+                            (None, SourceEvent::FileStart(path)) => {
+                                let path: PathBuf = String::from_utf8(path)
+                                    .expect("encoding")
+                                    .into();
+                                let (file_id, _modified) = index.get_temp_file(&path)?
+                                    .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Unknown file {:?}", path)))?;
+                                *file_blocks_id = Some((file_id, 0))
+                            }
+                            (Some((file_id, ref mut offset)), SourceEvent::FileBlock(hash, size)) => {
+                                index.add_missing_block(&hash, file_id, *offset, size)?;
+                                *offset += size;
+                            }
+                            (Some(_), SourceEvent::FileEnd) => {
+                                *file_blocks_id = None;
+                                *files_to_receive -= 1;
+                                if *files_to_receive == 0 {
+                                    let mut blocks_to_request = VecDeque::new();
+                                    for hash in index.list_missing_blocks()? {
+                                        blocks_to_request.push_back(hash);
+                                    }
+                                    let blocks_to_receive = blocks_to_request.len();
+                                    new_state = Some(FsDestinationState::GetBlocks {
+                                        blocks_to_request: Some(blocks_to_request),
+                                        blocks_to_receive,
+                                    });
+                                    cond.set();
+                                }
+                            }
+                            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source").into()),
+                        }
+                    }
+                    // Receiving block data
+                    FsDestinationState::GetBlocks { ref mut blocks_to_receive, .. } => {
+                        match event {
+                            SourceEvent::BlockData(hash, data) => {
+                                for (name, offset, _size) in index.list_block_locations(&hash)? {
+                                    debug!("FsDestination: writing block to {:?} offset {}", name, offset);
+                                    write_block(&root_dir.join(&name), offset, &data)?;
+                                }
+                                *blocks_to_receive -= 1; // Do we need to keep track of this?
+                            }
+                            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source").into()),
+                        }
+                    }
+                }
+                if let Some(s) = new_state {
+                    *state = s;
+                }
+            }
+            Ok(inner)
         }
     }
 }
