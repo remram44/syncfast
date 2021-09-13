@@ -447,14 +447,22 @@ impl<'a> FsDestinationInner<'a> {
                                         .into_bytes();
                                     files_to_request.push_back(name);
                                 }
-                                let files_to_receive = files_to_request.len();
-                                debug!("FsDestination::sink: state=GetFiles({} files)", files_to_receive);
-                                new_state = Some(FsDestinationState::GetFiles {
-                                    files_to_request,
-                                    files_to_receive,
-                                    cond: Default::default(),
-                                    file_blocks_id: None,
-                                });
+                                if !files_to_request.is_empty() {
+                                    let files_to_receive = files_to_request.len();
+                                    debug!("FsDestination::sink: state=GetFiles({} files)", files_to_receive);
+                                    new_state = Some(FsDestinationState::GetFiles {
+                                        files_to_request,
+                                        files_to_receive,
+                                        cond: Default::default(),
+                                        file_blocks_id: None,
+                                    });
+                                } else {
+                                    debug!("FsDestination::sink: state=GetBlocks(0 blocks)");
+                                    new_state = Some(FsDestinationState::GetBlocks {
+                                        blocks_to_request: Some(VecDeque::new()),
+                                        blocks_to_receive: 0,
+                                    });
+                                }
                                 cond.set();
                             }
                             _ => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source"))),
