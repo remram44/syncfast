@@ -156,6 +156,7 @@ pub async fn do_sync<S: Source, R: Destination>(
     );
     r1?;
     r2?;
+    info!("Sync complete");
 
     Ok(())
 }

@@ -19,7 +19,7 @@ use std::rc::Rc;
 use crate::{Error, HashDigest, temp_name, untemp_name};
 use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
 use crate::sync::{Destination, DestinationEvent, Source, SourceEvent};
-use crate::sync::utils::Condition;
+use crate::sync::utils::{Condition, ConditionFuture, move_file};
 
 fn read_block(path: &Path, offset: usize) -> Result<Vec<u8>, Error> {
     let mut file = File::open(path)?;
@@ -85,8 +85,7 @@ impl Source for FsSource {
             Box::pin(futures::sink::unfold((), move |(), event: DestinationEvent| {
                 let mut sender = sender.clone();
                 async move {
-                    sender.send(event).await.expect("fs channel");
-                    Ok(())
+                    sender.send(event).await.map_err(|_| Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "FsSource channel is closed")))
                 }
             })),
         )
@@ -328,12 +327,16 @@ impl<'a> FsDestinationInner<'a> {
     fn stream(inner: Rc<RefCell<FsDestinationInner>>) -> impl Future<Output=Option<(Result<DestinationEvent, Error>, Rc<RefCell<FsDestinationInner>>)>> {
         async move {
             loop {
-                let ret = match inner.borrow_mut().state {
+                // This works around borrow issue: have to do stuff after inner.borrow_mut() ends
+                enum WhatToDo {
+                    Wait(ConditionFuture),
+                    Return(DestinationEvent),
+                }
+                let what_to_do = match inner.borrow_mut().state {
                     // Receive files list
                     FsDestinationState::FilesList { ref mut cond } => {
                         // Nothing to produce, wait for state change
-                        cond.wait().await;
-                        continue;
+                        WhatToDo::Wait(cond.wait())
                     }
                     // Request blocks for files
                     FsDestinationState::GetFiles { ref mut files_to_request, ref mut cond, .. } => {
@@ -342,12 +345,11 @@ impl<'a> FsDestinationInner<'a> {
                                 if log_enabled!(Debug) {
                                     debug!("FsDestination::stream: send GetFile({:?})", String::from_utf8_lossy(&name));
                                 }
-                                DestinationEvent::GetFile(name)
+                                WhatToDo::Return(DestinationEvent::GetFile(name))
                             }
                             None => {
                                 debug!("FsDestination::stream: no more files, waiting...");
-                                cond.wait().await;
-                                continue;
+                                WhatToDo::Wait(cond.wait())
                             }
                         }
                     }
@@ -357,12 +359,12 @@ impl<'a> FsDestinationInner<'a> {
                             Some(ref mut l) => match l.pop_front() {
                                 Some(hash) => {
                                     debug!("FsDestination::stream: send GetBlock({})", hash);
-                                    DestinationEvent::GetBlock(hash)
+                                    WhatToDo::Return(DestinationEvent::GetBlock(hash))
                                 }
                                 None => {
                                     debug!("FsDestination::stream: no more blocks, send Complete");
                                     *blocks_to_request = None;
-                                    DestinationEvent::Complete
+                                    WhatToDo::Return(DestinationEvent::Complete)
                                 }
                             }
                             None => {
@@ -372,7 +374,10 @@ impl<'a> FsDestinationInner<'a> {
                         }
                     }
                 };
-                return Some((Ok(ret), inner));
+                match what_to_do {
+                    WhatToDo::Wait(cond) => cond.await,
+                    WhatToDo::Return(r) => return Some((Ok(r), inner)),
+                }
             }
         }
     }
@@ -417,10 +422,8 @@ impl<'a> FsDestinationInner<'a> {
                                 };
                                 if add {
                                     // Create temporary file
-                                    let temp_path = temp_name(&path)?;
-                                    let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
-                                    inner_.index.add_file_overwrite(&temp_path, now)?;
-                                    let temp_path = inner_.root_dir.join(temp_path);
+                                    inner_.index.add_temp_file(&path)?;
+                                    let temp_path = inner_.root_dir.join(temp_name(&path)?);
                                     debug!("FsDestination::sink: creating temp file {:?}", temp_path);
                                     if let Some(parent) = temp_path.parent() {
                                         std::fs::create_dir_all(parent)?;
@@ -454,30 +457,42 @@ impl<'a> FsDestinationInner<'a> {
                                 });
                                 cond.set();
                             }
-                            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source").into()),
+                            _ => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source"))),
                         }
                     }
                     // Receive blocks for files
                     FsDestinationState::GetFiles { ref mut cond, ref mut file_blocks_id, ref mut files_to_receive, .. } => {
-                        match (*file_blocks_id, event) {
+                        *file_blocks_id = match (*file_blocks_id, event) {
                             (None, SourceEvent::FileStart(path)) => {
                                 let path: PathBuf = String::from_utf8(path)
                                     .expect("encoding")
                                     .into();
                                 let (file_id, _modified) = index.get_temp_file(&path)?
                                     .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Unknown file {:?}", path)))?;
-                                *file_blocks_id = Some((file_id, 0))
+                                Some((file_id, 0))
                             }
                             // FIXME: Don't need to capture all of them by ref,
                             // but necessary for Rust 1.45
-                            (Some((ref file_id, ref mut offset)), SourceEvent::FileBlock(ref hash, ref size)) => {
-                                // TODO: Maybe copy it right now?
-                                // TODO: Is file finished? If yes, move to destination, update index
-                                index.add_missing_block(&hash, *file_id, *offset, *size)?;
-                                *offset += *size;
+                            (Some((file_id, offset)), SourceEvent::FileBlock(ref hash, ref size)) => {
+                                // See if we have this block, to copy it right now
+                                match index.get_block(&hash)? {
+                                    Some((from_path, from_offset, _from_size)) => {
+                                        let path = index.get_file_name(file_id)?;
+                                        let path = path.ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, "File gone from index during sync"))?;
+                                        debug!("FsDestination::sink: Copying block from {:?} offset {:?}", from_path, from_offset);
+                                        let block = read_block(&root_dir.join(&from_path), from_offset)?;
+                                        write_block(&root_dir.join(&path), offset, &block)?;
+                                        index.add_block(&hash, file_id, offset, *size)?;
+                                    }
+                                    None => {
+                                        debug!("FsDestination::sink: Don't know that block");
+                                        index.add_missing_block(&hash, file_id, offset, *size)?;
+                                    }
+                                }
+                                Some((file_id, offset + size))
                             }
-                            (Some(_), SourceEvent::FileEnd) => {
-                                *file_blocks_id = None;
+                            (Some((file_id, offset)), SourceEvent::FileEnd) => {
+                                index.set_file_size_and_compute_blocks_hash(file_id, offset)?;
                                 *files_to_receive -= 1;
                                 debug!("FsDestination::sink: {} files left to receive", *files_to_receive);
                                 if *files_to_receive == 0 {
@@ -494,23 +509,27 @@ impl<'a> FsDestinationInner<'a> {
                                     });
                                     cond.set();
                                 }
+                                None
                             }
-                            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source").into()),
+                            _ => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source"))),
                         }
                     }
                     // Receiving block data
                     FsDestinationState::GetBlocks { ref mut blocks_to_receive, .. } => {
                         match event {
                             SourceEvent::BlockData(hash, data) => {
-                                for (name, offset, _size) in index.list_block_locations(&hash)? {
+                                for (file_id, name, offset, _size) in index.list_block_locations(&hash)? {
                                     debug!("FsDestination::sink: writing block to {:?} offset {}", name, offset);
                                     write_block(&root_dir.join(&name), offset, &data)?;
-                                    // TODO: Is file finished? If yes, move to destination, update index
+                                    index.mark_block_present(file_id, &hash, offset)?;
                                 }
-                                *blocks_to_receive -= 1; // Do we need to keep track of this?
+                                *blocks_to_receive -= 1;
                                 debug!("FsDestination::sink: {} blocks left to receive", *blocks_to_receive);
+                                if *blocks_to_receive == 0 {
+                                    Self::finish(root_dir, index)?;
+                                }
                             }
-                            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source").into()),
+                            _ => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source"))),
                         }
                     }
                 }
@@ -520,5 +539,27 @@ impl<'a> FsDestinationInner<'a> {
             }
             Ok(inner)
         }
+    }
+
+    fn finish(root_dir: &Path, index: &mut Index) -> Result<(), Error> {
+        for (file_id, name, missing_blocks) in index.check_temp_files()? {
+            if missing_blocks {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Missing blocks in file {:?}", name),
+                )));
+            }
+
+            let final_name = untemp_name(&name)?;
+            debug!("FsDestination: moving {:?} to {:?}", name, final_name);
+
+            // Rename temporary file into destination
+            move_file(&root_dir.join(name), &root_dir.join(&final_name))?;
+
+            // Update index
+            index.move_temp_file_into_place(file_id, &final_name)?;
+        }
+        index.commit()?;
+        Ok(())
     }
 }
