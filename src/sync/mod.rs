@@ -2,7 +2,7 @@
 
 pub mod fs;
 pub mod locations;
-//pub mod ssh;
+pub mod ssh;
 mod utils;
 
 use log::info;

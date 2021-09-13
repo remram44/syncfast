@@ -1,10 +1,11 @@
 use std::convert::TryInto;
+use std::io::Write;
 use std::ops::Deref;
 
 use crate::HashDigest;
 use crate::HASH_DIGEST_LEN;
 use crate::streaming_iterator::StreamingIterator;
-use crate::sync::Message;
+use crate::sync::{DestinationEvent, SourceEvent};
 
 #[derive(Debug)]
 pub struct Error(&'static str);
@@ -73,6 +74,22 @@ impl<'a> From<&'a OwnedMessage> for Message<'a> {
             &OwnedMessage::Complete => Message::Complete,
         }
     }
+}
+
+impl From<SourceEvent> for OwnedMessage {
+    fn from(event: SourceEvent) -> OwnedMessage {
+        todo!()
+    }
+}
+
+impl From<DestinationEvent> for OwnedMessage {
+    fn from(event: DestinationEvent) -> OwnedMessage {
+        todo!()
+    }
+}
+
+pub fn write_message<'a, M: Into<Message<'a>>, W: Write>(mesage: M, writer: W) -> std::io::Result<()> {
+    todo!()
 }
 
 #[derive(Default)]
