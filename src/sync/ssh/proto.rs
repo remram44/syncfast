@@ -1,6 +1,7 @@
 use std::convert::TryInto;
 use std::io::Write;
 use std::ops::Deref;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 use crate::HashDigest;
 use crate::HASH_DIGEST_LEN;
@@ -27,7 +28,7 @@ pub enum Message<'a> {
     FileBlock(HashDigest, usize),
     FileEnd,
     GetBlock(HashDigest),
-    BlockData(&'a [u8]),
+    BlockData(HashDigest, &'a [u8]),
     Complete,
 }
 
@@ -40,7 +41,7 @@ pub enum OwnedMessage {
     FileBlock(HashDigest, usize),
     FileEnd,
     GetBlock(HashDigest),
-    BlockData(Vec<u8>),
+    BlockData(HashDigest, Vec<u8>),
     Complete,
 }
 
@@ -54,7 +55,7 @@ impl<'a> From<Message<'a>> for OwnedMessage {
             Message::FileBlock(digest, size) => OwnedMessage::FileBlock(digest, size),
             Message::FileEnd => OwnedMessage::FileEnd,
             Message::GetBlock(digest) => OwnedMessage::GetBlock(digest),
-            Message::BlockData(data) => OwnedMessage::BlockData(data.to_owned()),
+            Message::BlockData(digest, data) => OwnedMessage::BlockData(digest, data.to_owned()),
             Message::Complete => OwnedMessage::Complete,
         }
     }
@@ -70,7 +71,7 @@ impl<'a> From<&'a OwnedMessage> for Message<'a> {
             &OwnedMessage::FileBlock(ref digest, size) => Message::FileBlock(digest.clone(), size),
             &OwnedMessage::FileEnd => Message::FileEnd,
             &OwnedMessage::GetBlock(ref digest) => Message::GetBlock(digest.clone()),
-            &OwnedMessage::BlockData(ref data) => Message::BlockData(data),
+            &OwnedMessage::BlockData(ref digest, ref data) => Message::BlockData(digest.clone(), data),
             &OwnedMessage::Complete => Message::Complete,
         }
     }
@@ -78,18 +79,75 @@ impl<'a> From<&'a OwnedMessage> for Message<'a> {
 
 impl From<SourceEvent> for OwnedMessage {
     fn from(event: SourceEvent) -> OwnedMessage {
-        todo!()
+        match event {
+            SourceEvent::FileEntry(name, size, hash) => OwnedMessage::FileEntry(name, size, hash),
+            SourceEvent::EndFiles => OwnedMessage::EndFiles,
+            SourceEvent::FileStart(name) => OwnedMessage::FileStart(name),
+            SourceEvent::FileBlock(hash, size) => OwnedMessage::FileBlock(hash, size),
+            SourceEvent::FileEnd => OwnedMessage::FileEnd,
+            SourceEvent::BlockData(hash, data) => OwnedMessage::BlockData(hash, data),
+        }
     }
 }
 
 impl From<DestinationEvent> for OwnedMessage {
     fn from(event: DestinationEvent) -> OwnedMessage {
-        todo!()
+        match event {
+            DestinationEvent::GetFile(name) => OwnedMessage::GetFile(name),
+            DestinationEvent::GetBlock(digest) => OwnedMessage::GetBlock(digest),
+            DestinationEvent::Complete => OwnedMessage::Complete,
+        }
     }
 }
 
-pub fn write_message<'a, M: Into<Message<'a>>, W: Write>(mesage: M, writer: W) -> std::io::Result<()> {
-    todo!()
+pub fn write_message<'a, M: Into<Message<'a>>, W: Write>(message: M, mut writer: W) -> std::io::Result<()> {
+    let message = message.into();
+    match message {
+        Message::FileEntry(name, size, digest) => {
+            writer.write_all(b"FILE_ENTRY\n")?;
+            writer.write_all(name)?;
+            write!(writer, "\n{}\n", size)?;
+            writer.write_all(&digest.0)?;
+            writer.write_all(b"\n")?;
+        }
+        Message::EndFiles => {
+            writer.write_all(b"END_FILES\n")?;
+        }
+        Message::GetFile(name) => {
+            writer.write_all(b"GET_FILE\n")?;
+            writer.write_all(name)?;
+            writer.write_all(b"\n")?;
+        }
+        Message::FileStart(name) => {
+            writer.write_all(b"FILE_START\n")?;
+            writer.write_all(name)?;
+            writer.write_all(b"\n")?;
+        }
+        Message::FileBlock(digest, size) => {
+            writer.write_all(b"FILE_BLOCK\n")?;
+            writer.write_all(&digest.0)?;
+            write!(writer, "\n{}\n", size)?;
+        }
+        Message::FileEnd => {
+            writer.write_all(b"FILE_END\n")?;
+        }
+        Message::GetBlock(digest) => {
+            writer.write_all(b"GET_BLOCK\n")?;
+            writer.write_all(&digest.0)?;
+            writer.write_all(b"\n")?;
+        }
+        Message::BlockData(digest, data) => {
+            writer.write_all(b"BLOCK_DATA")?;
+            writer.write_all(&digest.0)?;
+            write!(writer, "\n{}\n", data.len())?;
+            writer.write_all(data)?;
+            writer.write_all(b"\n")?;
+        }
+        Message::Complete => {
+            writer.write_all(b"COMPLETE\n")?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -97,6 +155,8 @@ pub struct Parser {
     buffer: Vec<u8>,
     pos: usize,
 }
+
+use std::future::Future;
 
 impl Parser {
     pub fn receive<'a, E, F>(&'a mut self, func: F) -> Result<Messages<'a>, E>
@@ -111,6 +171,53 @@ impl Parser {
             buffer: &mut self.buffer,
             pos: &mut self.pos,
         })
+    }
+
+    pub fn receive_async<
+        'a, 'b,
+        E,
+        P: Future<Output=Result<(), E>>,
+        F: 'b + FnOnce(&mut Vec<u8>) -> P,
+    >(&'a mut self, func: F) -> impl Future<Output=Result<Messages<'a>, E>> + 'b
+    where
+        'a: 'b
+    {
+        async move {
+            self.buffer.drain(..self.pos);
+            self.pos = 0;
+
+            func(&mut self.buffer).await?;
+            Ok(Messages {
+                buffer: &mut self.buffer,
+                pos: &mut self.pos,
+            })
+        }
+    }
+
+    pub fn read_async<'a, R: AsyncRead + Unpin>(
+        &'a mut self,
+        mut reader: R,
+    ) -> impl Future<Output=Result<Messages<'a>, std::io::Error>> {
+        async move {
+            self.buffer.drain(..self.pos);
+            self.pos = 0;
+
+            reader.read_buf(&mut self.buffer).await?;
+            Ok(Messages {
+                buffer: &mut self.buffer,
+                pos: &mut self.pos,
+            })
+        }
+    }
+
+    pub fn parse<'a>(&'a mut self, input: &[u8]) -> Messages<'a> {
+        self.buffer.drain(..self.pos);
+        self.pos = 0;
+        self.buffer.extend_from_slice(input);
+        Messages {
+            buffer: &mut self.buffer,
+            pos: &mut self.pos,
+        }
     }
 }
 
@@ -165,6 +272,24 @@ impl<'a> View<'a, u8> {
             }
         }
     }
+
+    fn read_exact<E>(
+        &mut self,
+        size: usize,
+        error: E,
+    ) -> Result<Option<&'a [u8]>, E> {
+        if self.slice[self.pos..].len() >= size + 1 {
+            if self.slice[self.pos + size] == b'\n' {
+                let value = &self.slice[self.pos..self.pos + size];
+                self.advance(size + 1);
+                Ok(Some(value))
+            } else {
+                Err(error)
+            }
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl<'a, T> Deref for View<'a, T> {
@@ -189,7 +314,7 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
             Ok(Some(s)) => s,
             Ok(None) => return None,
         };
-        if command == b"FILE_ENTRY" {
+        let ret = if command == b"FILE_ENTRY" {
             // Read filename
             let filename = match buffer.read_line(FILENAME_MAX, Error("Unterminated filename")) {
                 Err(e) => return Some(Err(e)),
@@ -209,22 +334,16 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
                 None => return Some(Err(Error("Invalid file size"))),
             };
             // Read digest
-            let digest = match buffer.read_line(HASH_DIGEST_LEN, Error("Unterminated digest")) {
+            let digest = match buffer.read_exact(HASH_DIGEST_LEN, Error("Unterminated digest")) {
                 Err(e) => return Some(Err(e)),
                 Ok(Some(s)) => s,
                 Ok(None) => return None,
             };
-            let digest = if digest.len() == HASH_DIGEST_LEN {
-                HashDigest(digest.try_into().unwrap())
-            } else {
-                return None;
-            };
+            let digest = HashDigest(digest.try_into().unwrap());
             // Success
-            *self.pos += buffer.pos;
-            Some(Ok(Message::FileEntry(filename, size, digest)))
+            Message::FileEntry(filename, size, digest)
         } else if command == b"END_FILES" {
-            *self.pos += buffer.pos;
-            Some(Ok(Message::EndFiles))
+            Message::EndFiles
         } else if command == b"GET_FILE" {
             // Read filename
             let filename = match buffer.read_line(FILENAME_MAX, Error("Unterminated filename")) {
@@ -233,8 +352,7 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
                 Ok(None) => return None,
             };
             // Success
-            *self.pos += buffer.pos;
-            Some(Ok(Message::GetFile(filename)))
+            Message::GetFile(filename)
         } else if command == b"FILE_START" {
             // Read filename
             let filename = match buffer.read_line(FILENAME_MAX, Error("Unterminated filename")) {
@@ -243,20 +361,15 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
                 Ok(None) => return None,
             };
             // Success
-            *self.pos += buffer.pos;
-            Some(Ok(Message::FileStart(filename)))
+            Message::FileStart(filename)
         } else if command == b"FILE_BLOCK" {
             // Read digest
-            let digest = match buffer.read_line(HASH_DIGEST_LEN, Error("Unterminated digest")) {
+            let digest = match buffer.read_exact(HASH_DIGEST_LEN, Error("Unterminated digest")) {
                 Err(e) => return Some(Err(e)),
                 Ok(Some(s)) => s,
                 Ok(None) => return None,
             };
-            let digest = if digest.len() == HASH_DIGEST_LEN {
-                HashDigest(digest.try_into().unwrap())
-            } else {
-                return None;
-            };
+            let digest = HashDigest(digest.try_into().unwrap());
             // Read size
             let size = match buffer.read_line(SIZE_MAX, Error("Unterminated size")) {
                 Err(e) => return Some(Err(e)),
@@ -270,27 +383,27 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
                 None => return Some(Err(Error("Invalid block size"))),
             };
             // Success
-            *self.pos += buffer.pos;
-            Some(Ok(Message::FileBlock(digest, size)))
+            Message::FileBlock(digest, size)
         } else if command == b"FILE_END" {
-            *self.pos += buffer.pos;
-            Some(Ok(Message::FileEnd))
+            Message::FileEnd
         } else if command == b"GET_BLOCK" {
             // Read digest
-            let digest = match buffer.read_line(HASH_DIGEST_LEN, Error("Unterminated digest")) {
+            let digest = match buffer.read_exact(HASH_DIGEST_LEN, Error("Unterminated digest")) {
                 Err(e) => return Some(Err(e)),
                 Ok(Some(s)) => s,
                 Ok(None) => return None,
             };
-            let digest = if digest.len() == HASH_DIGEST_LEN {
-                HashDigest(digest.try_into().unwrap())
-            } else {
-                return None;
-            };
+            let digest = HashDigest(digest.try_into().unwrap());
             // Success
-            *self.pos += buffer.pos;
-            Some(Ok(Message::GetBlock(digest)))
+            Message::GetBlock(digest)
         } else if command == b"BLOCK_DATA" {
+            // Read digest
+            let digest = match buffer.read_exact(HASH_DIGEST_LEN, Error("Unterminated digest")) {
+                Err(e) => return Some(Err(e)),
+                Ok(Some(s)) => s,
+                Ok(None) => return None,
+            };
+            let digest = HashDigest(digest.try_into().unwrap());
             // Read data length
             let size = match buffer.read_line(SIZE_MAX, Error("Unterminated length")) {
                 Err(e) => return Some(Err(e)),
@@ -304,30 +417,27 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
                 None => return Some(Err(Error("Invalid block length"))),
             };
             // Read data
-            let data = if buffer.len() >= size + 1 {
-                let data = buffer.advance(size);
-                if buffer.advance(1) != b"\n" {
-                    return Some(Err(Error("Invalid data end byte")));
-                }
-                data
-            } else {
-                return None;
+            let data = match buffer.read_exact(size, Error("Invalid data end byte")) {
+                Err(e) => return Some(Err(e)),
+                Ok(Some(s)) => s,
+                Ok(None) => return None,
             };
             // Success
-            *self.pos += buffer.pos;
-            Some(Ok(Message::BlockData(data)))
+            Message::BlockData(digest, data)
         } else if command == b"COMPLETE" {
-            *self.pos += buffer.pos;
-            Some(Ok(Message::Complete))
+            Message::Complete
         } else {
-            Some(Err(Error("Unknown command: {:?}")))
-        }
+            return Some(Err(Error("Unknown command: {:?}")));
+        };
+
+        *self.pos += buffer.pos;
+        Some(Ok(ret))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Parser, Message, Messages};
+    use super::{OwnedMessage, Parser, Message, Messages, write_message};
     use crate::HashDigest;
     use crate::streaming_iterator::StreamingIterator;
 
@@ -376,5 +486,22 @@ mod tests {
                 expected_messages,
             );
         }
+    }
+
+    #[test]
+    fn test_write() {
+        let mut output = Vec::new();
+        write_message(
+            Message::FileEntry(b"filename", 12, HashDigest(*b"12345678901234567890")),
+            &mut output,
+        ).unwrap();
+        write_message(
+            &OwnedMessage::EndFiles,
+            &mut output,
+        ).unwrap();
+        assert_eq!(
+            &output,
+            b"FILE_ENTRY\nfilename\n12\n12345678901234567890\nEND_FILES\n",
+        );
     }
 }

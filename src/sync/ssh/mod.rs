@@ -1,16 +1,59 @@
 mod proto;
 
-use futures::io::{AsyncWrite, AsyncWriteExt};
 use futures::sink::Sink;
 use futures::stream::{LocalBoxStream, StreamExt};
 use std::future::Future;
 use std::pin::Pin;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::Stdio;
+use tokio::io::{AsyncWriteExt};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::Error;
 use crate::sync::{Destination, DestinationEvent, Source, SourceEvent};
 use crate::sync::locations::SshLocation;
-use crate::sync::ssh::proto::{Parser, write_message};
+use crate::sync::ssh::proto::{Messages, Parser, write_message};
+
+struct SshStream<'a> {
+    stdout: &'a mut ChildStdout,
+    parser: Parser,
+}
+
+impl<'a> SshStream<'a> {
+    fn new(stdout: &'a mut ChildStdout) -> SshStream<'a> {
+        SshStream {
+            stdout,
+            parser: Default::default(),
+        }
+    }
+
+    fn project<'b>(self: &'b mut Pin<Box<SshStream<'a>>>) -> (&'b mut ChildStdout, &'b mut Parser) where 'a: 'b {
+        unsafe {
+            let s = self.as_mut().get_unchecked_mut();
+            (s.stdout, &mut s.parser)
+        }
+    }
+}
+
+struct SshSink<'a> {
+    stdin: &'a mut ChildStdin,
+    buffer: Vec<u8>,
+}
+
+impl<'a> SshSink<'a> {
+    fn new(stdin: &'a mut ChildStdin) -> SshSink<'a> {
+        SshSink {
+            stdin,
+            buffer: Vec::new(),
+        }
+    }
+
+    fn project<'b>(self: &'b mut Pin<Box<SshSink<'a>>>) -> (&'b mut ChildStdin, &'b mut Vec<u8>) where 'a: 'b {
+        unsafe {
+            let s = self.as_mut().get_unchecked_mut();
+            (s.stdin, &mut s.buffer)
+        }
+    }
+}
 
 pub struct SshSource {
     process: Child,
@@ -32,56 +75,63 @@ impl SshSource {
         Ok(SshSource { process })
     }
 
-    fn project_sink<'a, 'b>(sink: &'b mut Pin<Box<(&'a mut ChildStdin, Vec<u8>)>>) -> (&'b mut ChildStdin, &'b mut Vec<u8>) where 'a: 'b {
-        unsafe {
-            let s = sink.as_mut().get_unchecked_mut();
-            (s.0, &mut s.1)
+    fn stream<'a>(mut arg: Pin<Box<SshStream<'a>>>) -> impl Future<Output=Option<(Result<SourceEvent, Error>, Pin<Box<SshStream<'a>>>)>> {
+        async move {
+            let (stream, parser) = arg.project();
+
+            macro_rules! err {
+                ($e:expr) => {
+                    Some((Err($e.into()), arg))
+                }
+            }
+            // FIXME: Replace by try_block when supported by Rust
+            macro_rules! try_ {
+                ($v:expr) => {
+                    match $v {
+                        Ok(r) => r,
+                        Err(e) => return err!(e),
+                    }
+                }
+            }
+
+            let messages: Result<Messages, std::io::Error> = parser.read_async(stream).await;
+            let messages: Messages = try_!(messages);
+            let event = todo!();
+            Some((Ok(event), arg))
         }
     }
 
-    fn stream<'a>(mut stream: Pin<Box<(&'a mut ChildStdout, Parser)>>) -> impl Future<Output=Option<(Result<SourceEvent, Error>, Pin<Box<(&'a mut ChildStdout, Parser)>>)>> {
+    fn sink<'a>(mut arg: Pin<Box<SshSink<'a>>>, event: DestinationEvent) -> impl Future<Output=Result<Pin<Box<SshSink<'a>>>, Error>> {
         async move {
-            let parser = &mut stream.1;
-            let stream = &mut stream.0;
-            todo!()
-        }
-    }
+            let (sink, mut buffer) = arg.project();
 
-    fn sink<'a>(mut sink: Pin<Box<(&'a mut ChildStdin, Vec<u8>)>>, event: DestinationEvent) -> impl Future<Output=Result<Pin<Box<(&'a mut ChildStdin, Vec<u8>)>>, Error>> {
-        async move {
-            let (sink, mut buffer) = Self::project_sink(&mut sink);
             write_message(&event.into(), &mut buffer)?;
-            AsyncWriteExt::write_all(sink, buffer).await?;
+            sink.write_all(buffer).await?;
             buffer.clear();
-            todo!()
+            Ok(arg)
         }
     }
 }
 
 impl Source for SshSource {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
-        let parser: Parser = Default::default();
         (
             futures::stream::unfold(
-                Box::pin((self.process.stdout.as_mut().unwrap(), parser)),
+                Box::pin(SshStream::new(self.process.stdout.as_mut().unwrap())),
                 SshSource::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin((self.process.stdin.as_mut().unwrap(), Vec::new())),
+                Box::pin(SshSink::new(self.process.stdin.as_mut().unwrap())),
                 SshSource::sink,
             )),
         )
     }
 }
 
-struct SshSourceFrom {
-    stdout: ChildStdout,
-}
-
 pub struct SshDestination;
 
 impl SshDestination {
-    pub fn new(loc: &SshLocation) -> Result<SshDestination, Error> {
+    pub fn new(_loc: &SshLocation) -> Result<SshDestination, Error> {
         Ok(SshDestination)
     }
 }
