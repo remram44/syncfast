@@ -2,6 +2,8 @@ mod proto;
 
 use futures::sink::Sink;
 use futures::stream::{LocalBoxStream, StreamExt};
+use std::collections::VecDeque;
+use std::convert::TryInto;
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -9,13 +11,28 @@ use tokio::io::{AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::Error;
+use crate::streaming_iterator::StreamingIterator;
 use crate::sync::{Destination, DestinationEvent, Source, SourceEvent};
 use crate::sync::locations::SshLocation;
-use crate::sync::ssh::proto::{Messages, Parser, write_message};
+use crate::sync::ssh::proto::{OwnedMessage, Parser, write_message};
+
+fn shell_escape(input: &str) -> String {
+    let mut result = String::new();
+    result.push('"');
+    for c in input.chars() {
+        if c == '\\' || c == '"' {
+            result.push('\\');
+        }
+        result.push(c);
+    }
+    result.push('"');
+    result
+}
 
 struct SshStream<'a> {
     stdout: &'a mut ChildStdout,
     parser: Parser,
+    messages: VecDeque<OwnedMessage>,
 }
 
 impl<'a> SshStream<'a> {
@@ -23,13 +40,14 @@ impl<'a> SshStream<'a> {
         SshStream {
             stdout,
             parser: Default::default(),
+            messages: VecDeque::new(),
         }
     }
 
-    fn project<'b>(self: &'b mut Pin<Box<SshStream<'a>>>) -> (&'b mut ChildStdout, &'b mut Parser) where 'a: 'b {
+    fn project<'b>(self: &'b mut Pin<Box<SshStream<'a>>>) -> (&'b mut ChildStdout, &'b mut Parser, &'b mut VecDeque<OwnedMessage>) where 'a: 'b {
         unsafe {
             let s = self.as_mut().get_unchecked_mut();
-            (s.stdout, &mut s.parser)
+            (s.stdout, &mut s.parser, &mut s.messages)
         }
     }
 }
@@ -68,6 +86,9 @@ impl SshSource {
         };
         let process: Child = Command::new("ssh")
             .arg(connection_arg)
+            .arg("syncfast")
+            .arg("remote-recv")
+            .arg(shell_escape(path))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -77,7 +98,7 @@ impl SshSource {
 
     fn stream<'a>(mut arg: Pin<Box<SshStream<'a>>>) -> impl Future<Output=Option<(Result<SourceEvent, Error>, Pin<Box<SshStream<'a>>>)>> {
         async move {
-            let (stream, parser) = arg.project();
+            let (stream, parser, messages) = arg.project();
 
             macro_rules! err {
                 ($e:expr) => {
@@ -94,10 +115,28 @@ impl SshSource {
                 }
             }
 
-            let messages: Result<Messages, std::io::Error> = parser.read_async(stream).await;
-            let messages: Messages = try_!(messages);
-            let event = todo!();
-            Some((Ok(event), arg))
+            if messages.is_empty() {
+                // FIXME: Store the iterator instead of a vector of values,
+                // however this makes it self-referential...
+                let mut iterator = try_!(parser.read_async(stream).await);
+                loop {
+                    match iterator.next() {
+                        Some(Ok(msg)) => messages.push_back(msg.into()),
+                        Some(Err(e)) => return err!(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                        None => break,
+                    }
+                }
+            }
+            match messages.pop_front() {
+                Some(msg) => {
+                    let event = match msg.try_into() {
+                        Ok(e) => e,
+                        Err(()) => return err!(std::io::Error::new(std::io::ErrorKind::InvalidData, "Message is not valid for Source")),
+                    };
+                    Some((Ok(event), arg))
+                }
+                None => return None,
+            }
         }
     }
 

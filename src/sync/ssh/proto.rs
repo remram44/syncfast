@@ -1,7 +1,7 @@
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::io::Write;
 use std::ops::Deref;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::HashDigest;
 use crate::HASH_DIGEST_LEN;
@@ -97,6 +97,35 @@ impl From<DestinationEvent> for OwnedMessage {
             DestinationEvent::GetBlock(digest) => OwnedMessage::GetBlock(digest),
             DestinationEvent::Complete => OwnedMessage::Complete,
         }
+    }
+}
+
+impl TryFrom<OwnedMessage> for SourceEvent {
+    type Error = ();
+
+    fn try_from(message: OwnedMessage) -> Result<SourceEvent, ()> {
+        Ok(match message {
+            OwnedMessage::FileEntry(name, size, hash) => SourceEvent::FileEntry(name, size, hash),
+            OwnedMessage::EndFiles => SourceEvent::EndFiles,
+            OwnedMessage::FileStart(name) => SourceEvent::FileStart(name),
+            OwnedMessage::FileBlock(hash, size) => SourceEvent::FileBlock(hash, size),
+            OwnedMessage::FileEnd => SourceEvent::FileEnd,
+            OwnedMessage::BlockData(hash, data) => SourceEvent::BlockData(hash, data),
+            _ => return Err(()),
+        })
+    }
+}
+
+impl TryFrom<OwnedMessage> for DestinationEvent {
+    type Error = ();
+
+    fn try_from(message: OwnedMessage) -> Result<DestinationEvent, ()> {
+        Ok(match message {
+            OwnedMessage::GetFile(name) => DestinationEvent::GetFile(name),
+            OwnedMessage::GetBlock(digest) => DestinationEvent::GetBlock(digest),
+            OwnedMessage::Complete => DestinationEvent::Complete,
+            _ => return Err(()),
+        })
     }
 }
 
