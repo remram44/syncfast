@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::Error;
 use crate::sync::{Destination, Source};
-use crate::sync::fs::{FsDestination, FsSource};
+use crate::sync::fs::{fs_destination, fs_source};
 
 /// SSH remote path, with user and host
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -72,25 +72,22 @@ impl Location {
     }
 
     /// Create a `Destination` to sync to this location
-    pub fn open_destination(&self) -> Result<Box<dyn Destination>, Error> {
-        let w = match self {
-            Location::Local(path) => Box::new(FsDestination::new(path.to_owned())?),
+    pub fn open_destination(&self) -> Result<Destination, Error> {
+        let w: Destination = match self {
+            Location::Local(path) => fs_destination(path.to_owned())?,
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
             Location::Http(_url) => {
                 // Shouldn't happen, caught in main.rs
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Can't write to HTTP location",
-                )));
+                return Err(Error::UnsupportedForLocation("Can't write to HTTP location"));
             }
         };
         Ok(w)
     }
 
     /// Create a `Source` to sync from this location
-    pub fn open_source(&self) -> Result<Box<dyn Source>, Error> {
-        let w = match self {
-            Location::Local(path) => Box::new(FsSource::new(path.to_owned())?),
+    pub fn open_source(&self) -> Result<Source, Error> {
+        let w: Source = match self {
+            Location::Local(path) => fs_source(path.to_owned())?,
             Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
             Location::Http(_url) => unimplemented!(), // TODO: HTTP
         };

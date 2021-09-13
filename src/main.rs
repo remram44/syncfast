@@ -145,23 +145,29 @@ fn main() {
                 }
             };
 
-            let source: Box<dyn syncfast::sync::Source> =
-                match source.open_source() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        eprintln!("Failed to open source: {}", e);
-                        std::process::exit(1);
-                    }
-                };
-            let destination: Box<dyn syncfast::sync::Destination> =
-                match dest.open_destination() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        eprintln!("Failed to open destination: {}", e);
-                        std::process::exit(1);
-                    }
-                };
-            do_sync(source, destination)
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let source: syncfast::sync::Source =
+                    match source.open_source() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            eprintln!("Failed to open source: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                let destination: syncfast::sync::Destination =
+                    match dest.open_destination() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            eprintln!("Failed to open destination: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                do_sync(source, destination).await
+            })
         }
         _ => {
             cli.print_help().expect("Can't print help");
