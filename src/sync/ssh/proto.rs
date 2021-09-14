@@ -1,3 +1,4 @@
+use log::warn;
 use std::convert::{TryFrom, TryInto};
 use std::io::Write;
 use std::ops::Deref;
@@ -456,7 +457,8 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
         } else if command == b"COMPLETE" {
             Message::Complete
         } else {
-            return Some(Err(Error("Unknown command: {:?}")));
+            warn!("Unknown command: {:?}", command);
+            return Some(Err(Error("Unknown command")));
         };
 
         *self.pos += buffer.pos;

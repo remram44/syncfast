@@ -2,8 +2,10 @@ mod proto;
 
 use futures::sink::Sink;
 use futures::stream::{LocalBoxStream, StreamExt};
+use log::{debug, info};
 use std::collections::VecDeque;
 use std::convert::{TryFrom, TryInto};
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -56,7 +58,7 @@ impl<'a> SshStream<'a> {
         }
     }
 
-    fn stream<T: TryFrom<OwnedMessage, Error=()>>(mut arg: Pin<Box<SshStream<'a>>>) -> impl Future<Output=Option<(Result<T, Error>, Pin<Box<SshStream<'a>>>)>> {
+    fn stream<T: TryFrom<OwnedMessage, Error=()> + Debug>(mut arg: Pin<Box<SshStream<'a>>>) -> impl Future<Output=Option<(Result<T, Error>, Pin<Box<SshStream<'a>>>)>> {
         async move {
             let (stream, parser, messages) = arg.project();
 
@@ -93,6 +95,7 @@ impl<'a> SshStream<'a> {
                         Ok(e) => e,
                         Err(()) => return err!(std::io::Error::new(std::io::ErrorKind::InvalidData, "Message is not valid for Source")),
                     };
+                    debug!("ssh: recv {:?}", event);
                     Some((Ok(event), arg))
                 }
                 None => return None,
@@ -121,10 +124,11 @@ impl<'a> SshSink<'a> {
         }
     }
 
-    fn sink<T: Into<OwnedMessage>>(mut arg: Pin<Box<SshSink<'a>>>, event: T) -> impl Future<Output=Result<Pin<Box<SshSink<'a>>>, Error>> {
+    fn sink<T: Into<OwnedMessage> + Debug>(mut arg: Pin<Box<SshSink<'a>>>, event: T) -> impl Future<Output=Result<Pin<Box<SshSink<'a>>>, Error>> {
         async move {
             let (sink, mut buffer) = arg.project();
 
+            debug!("ssh: send {:?}", event);
             write_message(&event.into(), &mut buffer)?;
             sink.write_all(buffer).await?;
             buffer.clear();
@@ -141,14 +145,25 @@ impl SshSource {
     pub fn new(loc: &SshLocation) -> Result<SshSource, Error> {
         let SshLocation { user, host, path } = loc;
         let connection_arg = match user {
-            Some(user) => format!("{}@{}", user, host),
-            None => host.to_owned(),
+            Some(user) => {
+                info!("Setting up source {}@{}:{}", user, host, path);
+                format!("{}@{}", user, host)
+            }
+            None => {
+                info!("Setting up source {}:{}", host, path);
+                host.to_owned()
+            }
         };
+        let escaped_path = shell_escape(path);
+        debug!(
+            "Running command: ssh {} syncfast remote-send {}",
+            connection_arg, escaped_path,
+        );
         let process: Child = Command::new("ssh")
             .arg(connection_arg)
             .arg("syncfast")
             .arg("remote-send")
-            .arg(shell_escape(path))
+            .arg(escaped_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -180,14 +195,25 @@ impl SshDestination {
     pub fn new(loc: &SshLocation) -> Result<SshDestination, Error> {
         let SshLocation { user, host, path } = loc;
         let connection_arg = match user {
-            Some(user) => format!("{}@{}", user, host),
-            None => host.to_owned(),
+            Some(user) => {
+                info!("Setting up destination {}@{}:{}", user, host, path);
+                format!("{}@{}", user, host)
+            }
+            None => {
+                info!("Setting up destination {}:{}", host, path);
+                host.to_owned()
+            }
         };
+        let escaped_path = shell_escape(path);
+        debug!(
+            "Running command: ssh {} syncfast remote-recv {}",
+            connection_arg, escaped_path,
+        );
         let process: Child = Command::new("ssh")
             .arg(connection_arg)
             .arg("syncfast")
             .arg("remote-recv")
-            .arg(shell_escape(path))
+            .arg(escaped_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
