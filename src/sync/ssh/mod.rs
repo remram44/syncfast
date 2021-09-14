@@ -131,6 +131,7 @@ impl<'a, W: AsyncWrite + Unpin> SshSink<'a, W> {
             debug!("ssh: send {:?}", event);
             write_message(&event.into(), &mut buffer)?;
             sink.write_all(buffer).await?;
+            sink.flush().await?;
             buffer.clear();
             Ok(arg)
         }
