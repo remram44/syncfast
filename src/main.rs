@@ -9,6 +9,7 @@ use std::path::Path;
 use syncfast::{Error, Index};
 use syncfast::sync::do_sync;
 use syncfast::sync::locations::Location;
+use syncfast::sync::ssh::StdioEndpoint;
 
 /// Command-line entrypoint
 fn main() {
@@ -145,29 +146,89 @@ fn main() {
                 }
             };
 
-            let source: Box<dyn syncfast::sync::Source> =
-                match source.open_source() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        eprintln!("Failed to open source: {}", e);
-                        std::process::exit(1);
-                    }
-                };
-            let destination: Box<dyn syncfast::sync::Destination> =
-                match dest.open_destination() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        eprintln!("Failed to open destination: {}", e);
-                        std::process::exit(1);
-                    }
-                };
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            runtime.block_on(
-                do_sync(source, destination)
-            )
+            runtime.block_on(async move {
+                let source: Box<dyn syncfast::sync::Source> =
+                    match source.open_source() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            eprintln!("Failed to open source: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                let destination: Box<dyn syncfast::sync::Destination> =
+                    match dest.open_destination() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            eprintln!("Failed to open destination: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                do_sync(source, destination).await
+            })
+        }
+        Some("remote-send") => {
+            let s_matches = matches.subcommand_matches("remote-send").unwrap();
+            let source = s_matches.value_of_os("source").unwrap();
+
+            let source = match source.to_str().and_then(Location::parse) {
+                Some(s) => s,
+                None => {
+                    eprintln!("Invalid source");
+                    std::process::exit(2);
+                }
+            };
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let source: Box<dyn syncfast::sync::Source> =
+                    match source.open_source() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            eprintln!("Failed to open source: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                let destination: Box<dyn syncfast::sync::Destination> =
+                    Box::new(StdioEndpoint::new());
+                do_sync(source, destination).await
+            })
+        }
+        Some("remote-recv") => {
+            let s_matches = matches.subcommand_matches("remote-recv").unwrap();
+            let destination = s_matches.value_of_os("destination").unwrap();
+
+            let destination = match destination.to_str().and_then(Location::parse) {
+                Some(s) => s,
+                None => {
+                    eprintln!("Invalid source");
+                    std::process::exit(2);
+                }
+            };
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let source: Box<dyn syncfast::sync::Source> =
+                    Box::new(StdioEndpoint::new());
+                let destination: Box<dyn syncfast::sync::Destination> =
+                    match destination.open_destination() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            eprintln!("Failed to open destination: {}", e);
+                            std::process::exit(1);
+                        }
+                    };
+                do_sync(source, destination).await
+            })
         }
         _ => {
             cli.print_help().expect("Can't print help");

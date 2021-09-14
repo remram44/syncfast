@@ -9,8 +9,8 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
-use tokio::io::{AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, Stdin, Stdout, stdin, stdout};
+use tokio::process::{Child, Command};
 
 use crate::Error;
 use crate::streaming_iterator::StreamingIterator;
@@ -36,14 +36,14 @@ fn shell_escape(input: &str) -> String {
 // Then we implement SshSource and SshDestination, which run `remote-send` and
 // `remote-recv` and use SshStream and SshSink to do all the messaging.
 
-struct SshStream<'a> {
-    stdout: &'a mut ChildStdout,
+struct SshStream<'a, R: AsyncRead + Unpin> {
+    stdout: &'a mut R,
     parser: Parser,
     messages: VecDeque<OwnedMessage>,
 }
 
-impl<'a> SshStream<'a> {
-    fn new(stdout: &'a mut ChildStdout) -> SshStream<'a> {
+impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
+    fn new(stdout: &'a mut R) -> SshStream<'a, R> {
         SshStream {
             stdout,
             parser: Default::default(),
@@ -51,14 +51,14 @@ impl<'a> SshStream<'a> {
         }
     }
 
-    fn project<'b>(self: &'b mut Pin<Box<SshStream<'a>>>) -> (&'b mut ChildStdout, &'b mut Parser, &'b mut VecDeque<OwnedMessage>) where 'a: 'b {
+    fn project<'b>(self: &'b mut Pin<Box<SshStream<'a, R>>>) -> (&'b mut R, &'b mut Parser, &'b mut VecDeque<OwnedMessage>) where 'a: 'b {
         unsafe {
             let s = self.as_mut().get_unchecked_mut();
             (s.stdout, &mut s.parser, &mut s.messages)
         }
     }
 
-    fn stream<T: TryFrom<OwnedMessage, Error=()> + Debug>(mut arg: Pin<Box<SshStream<'a>>>) -> impl Future<Output=Option<(Result<T, Error>, Pin<Box<SshStream<'a>>>)>> {
+    fn stream<T: TryFrom<OwnedMessage, Error=()> + Debug>(mut arg: Pin<Box<SshStream<'a, R>>>) -> impl Future<Output=Option<(Result<T, Error>, Pin<Box<SshStream<'a, R>>>)>> {
         async move {
             let (stream, parser, messages) = arg.project();
 
@@ -104,27 +104,27 @@ impl<'a> SshStream<'a> {
     }
 }
 
-struct SshSink<'a> {
-    stdin: &'a mut ChildStdin,
+struct SshSink<'a, W: AsyncWrite + Unpin> {
+    stdin: &'a mut W,
     buffer: Vec<u8>,
 }
 
-impl<'a> SshSink<'a> {
-    fn new(stdin: &'a mut ChildStdin) -> SshSink<'a> {
+impl<'a, W: AsyncWrite + Unpin> SshSink<'a, W> {
+    fn new(stdin: &'a mut W) -> SshSink<'a, W> {
         SshSink {
             stdin,
             buffer: Vec::new(),
         }
     }
 
-    fn project<'b>(self: &'b mut Pin<Box<SshSink<'a>>>) -> (&'b mut ChildStdin, &'b mut Vec<u8>) where 'a: 'b {
+    fn project<'b>(self: &'b mut Pin<Box<SshSink<'a, W>>>) -> (&'b mut W, &'b mut Vec<u8>) where 'a: 'b {
         unsafe {
             let s = self.as_mut().get_unchecked_mut();
             (s.stdin, &mut s.buffer)
         }
     }
 
-    fn sink<T: Into<OwnedMessage> + Debug>(mut arg: Pin<Box<SshSink<'a>>>, event: T) -> impl Future<Output=Result<Pin<Box<SshSink<'a>>>, Error>> {
+    fn sink<T: Into<OwnedMessage> + Debug>(mut arg: Pin<Box<SshSink<'a, W>>>, event: T) -> impl Future<Output=Result<Pin<Box<SshSink<'a, W>>>, Error>> {
         async move {
             let (sink, mut buffer) = arg.project();
 
@@ -231,6 +231,50 @@ impl Destination for SshDestination {
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
                 Box::pin(SshSink::new(self.process.stdin.as_mut().unwrap())),
+                SshSink::sink,
+            )),
+        )
+    }
+}
+
+pub struct StdioEndpoint {
+    stdin: Stdin,
+    stdout: Stdout,
+}
+
+impl StdioEndpoint {
+    pub fn new() -> StdioEndpoint {
+        StdioEndpoint {
+            stdin: stdin(),
+            stdout: stdout(),
+        }
+    }
+}
+
+impl Source for StdioEndpoint {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
+        (
+            futures::stream::unfold(
+                Box::pin(SshStream::new(&mut self.stdin)),
+                SshStream::stream,
+            ).boxed_local(),
+            Box::pin(futures::sink::unfold(
+                Box::pin(SshSink::new(&mut self.stdout)),
+                SshSink::sink,
+            )),
+        )
+    }
+}
+
+impl Destination for StdioEndpoint {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
+        (
+            futures::stream::unfold(
+                Box::pin(SshStream::new(&mut self.stdin)),
+                SshStream::stream,
+            ).boxed_local(),
+            Box::pin(futures::sink::unfold(
+                Box::pin(SshSink::new(&mut self.stdout)),
                 SshSink::sink,
             )),
         )
