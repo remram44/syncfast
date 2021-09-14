@@ -167,7 +167,7 @@ pub fn write_message<'a, M: Into<Message<'a>>, W: Write>(message: M, mut writer:
             writer.write_all(b"\n")?;
         }
         Message::BlockData(digest, data) => {
-            writer.write_all(b"BLOCK_DATA")?;
+            writer.write_all(b"BLOCK_DATA\n")?;
             writer.write_all(&digest.0)?;
             write!(writer, "\n{}\n", data.len())?;
             writer.write_all(data)?;
