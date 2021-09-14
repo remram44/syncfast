@@ -46,7 +46,7 @@ impl Location {
                 }
                 _ => (None, &s[6 .. idx_slash]),
             };
-            let path = &s[idx_slash + 1 ..];
+            let path = &s[idx_slash ..];
 
             Some(Location::Ssh(SshLocation {
                 user: user.map(Into::into),
@@ -132,7 +132,7 @@ mod tests {
             Some(Location::Ssh(SshLocation {
                 user: Some("user".into()),
                 host: "host".into(),
-                path: "path".into(),
+                path: "/path".into(),
             })),
         );
         assert_eq!(
@@ -140,7 +140,7 @@ mod tests {
             Some(Location::Ssh(SshLocation {
                 user: None,
                 host: "host".into(),
-                path: "".into(),
+                path: "/".into(),
             })),
         );
         assert_eq!(Location::parse("ssh://host"), None);
