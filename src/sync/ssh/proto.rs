@@ -203,27 +203,6 @@ impl Parser {
         })
     }
 
-    pub fn receive_async<
-        'a, 'b,
-        E,
-        P: Future<Output=Result<(), E>>,
-        F: 'b + FnOnce(&mut Vec<u8>) -> P,
-    >(&'a mut self, func: F) -> impl Future<Output=Result<Messages<'a>, E>> + 'b
-    where
-        'a: 'b
-    {
-        async move {
-            self.buffer.drain(..self.pos);
-            self.pos = 0;
-
-            func(&mut self.buffer).await?;
-            Ok(Messages {
-                buffer: &mut self.buffer,
-                pos: &mut self.pos,
-            })
-        }
-    }
-
     pub fn read_async<'a, R: AsyncRead + Unpin>(
         &'a mut self,
         mut reader: R,
