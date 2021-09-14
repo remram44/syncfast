@@ -35,18 +35,18 @@ impl Location {
         if s.starts_with("http://") || s.starts_with("https://") {
             Some(Location::Http(s.into()))
         } else if s.starts_with("ssh://") {
-            let idx_colon = match s[6 ..].find(':') {
+            let idx_slash = match s[6 ..].find('/') {
                 Some(i) => i + 6,
                 None => return None,
             };
             let (user, host) = match s[6 ..].find('@') {
-                Some(idx_at) if idx_at + 6 < idx_colon => {
+                Some(idx_at) if idx_at + 6 < idx_slash => {
                     let idx_at = idx_at + 6;
-                    (Some(&s[6 .. idx_at]), &s[idx_at + 1 .. idx_colon])
+                    (Some(&s[6 .. idx_at]), &s[idx_at + 1 .. idx_slash])
                 }
-                _ => (None, &s[6 .. idx_colon]),
+                _ => (None, &s[6 .. idx_slash]),
             };
-            let path = &s[idx_colon + 1 ..];
+            let path = &s[idx_slash + 1 ..];
 
             Some(Location::Ssh(SshLocation {
                 user: user.map(Into::into),
@@ -128,7 +128,7 @@ mod tests {
         );
         assert_eq!(Location::parse("file://file"), None);
         assert_eq!(
-            Location::parse("ssh://user@host:path"),
+            Location::parse("ssh://user@host/path"),
             Some(Location::Ssh(SshLocation {
                 user: Some("user".into()),
                 host: "host".into(),
@@ -136,7 +136,7 @@ mod tests {
             })),
         );
         assert_eq!(
-            Location::parse("ssh://host:"),
+            Location::parse("ssh://host/"),
             Some(Location::Ssh(SshLocation {
                 user: None,
                 host: "host".into(),
