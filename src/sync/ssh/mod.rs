@@ -130,6 +130,7 @@ impl<'a, W: AsyncWrite + Unpin> SshSink<'a, W> {
 
             debug!("ssh: send {:?}", event);
             write_message(&event.into(), &mut buffer)?;
+            eprintln!("send \"{}\"", String::from_utf8_lossy(&buffer));
             sink.write_all(buffer).await?;
             sink.flush().await?;
             buffer.clear();
@@ -163,8 +164,10 @@ impl SshSource {
         let process: Child = Command::new("ssh")
             .arg(connection_arg)
             .arg("syncfast")
+            .arg("-v -v")
             .arg("remote-send")
             .arg(escaped_path)
+            .arg("2>/tmp/remote.log")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -213,8 +216,10 @@ impl SshDestination {
         let process: Child = Command::new("ssh")
             .arg(connection_arg)
             .arg("syncfast")
+            .arg("-v -v")
             .arg("remote-recv")
             .arg(escaped_path)
+            .arg("2>/tmp/remote.log")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

@@ -313,13 +313,17 @@ impl<'a, 'b: 'a> StreamingIterator<'a> for Messages<'b> {
     type Item = Result<Message<'a>, Error>;
 
     fn next(&'a mut self) -> Option<Result<Message<'a>, Error>> {
+        eprintln!("recv \"{}\"", String::from_utf8_lossy(&self.buffer[*self.pos..]));
         let mut buffer = View::new(&self.buffer[*self.pos..]);
         if buffer.len() == 0 {
             return None;
         }
         // Read command
         let command = match buffer.read_line(COMMAND_MAX, Error("Unterminated command")) {
-            Err(e) => return Some(Err(e)),
+            Err(e) => {
+                warn!("ERROR: \"{}\"", String::from_utf8_lossy(&self.buffer[*self.pos..]));
+                return Some(Err(e));
+            }
             Ok(Some(s)) => s,
             Ok(None) => return None,
         };
