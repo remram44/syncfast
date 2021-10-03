@@ -9,7 +9,7 @@ use std::path::Path;
 use syncfast::{Error, Index};
 use syncfast::sync::do_sync;
 use syncfast::sync::locations::Location;
-//use syncfast::sync::ssh::StdioEndpoint;
+use syncfast::sync::ssh::{stdio_destination, stdio_source};
 
 /// Command-line entrypoint
 fn main() {
@@ -170,7 +170,7 @@ fn main() {
                 do_sync(source, destination).await
             })
         }
-        /*Some("remote-send") => {
+        Some("remote-send") => {
             let s_matches = matches.subcommand_matches("remote-send").unwrap();
             let source = s_matches.value_of_os("source").unwrap();
 
@@ -187,7 +187,7 @@ fn main() {
                 .build()
                 .unwrap();
             runtime.block_on(async move {
-                let source: Box<dyn syncfast::sync::Source> =
+                let source: syncfast::sync::Source =
                     match source.open_source() {
                         Ok(o) => o,
                         Err(e) => {
@@ -195,8 +195,8 @@ fn main() {
                             std::process::exit(1);
                         }
                     };
-                let destination: Box<dyn syncfast::sync::Destination> =
-                    Box::new(StdioEndpoint::new());
+                let destination: syncfast::sync::Destination =
+                    stdio_destination();
                 do_sync(source, destination).await
             })
         }
@@ -217,9 +217,9 @@ fn main() {
                 .build()
                 .unwrap();
             runtime.block_on(async move {
-                let source: Box<dyn syncfast::sync::Source> =
-                    Box::new(StdioEndpoint::new());
-                let destination: Box<dyn syncfast::sync::Destination> =
+                let source: syncfast::sync::Source =
+                    stdio_source();
+                let destination: syncfast::sync::Destination =
                     match destination.open_destination() {
                         Ok(o) => o,
                         Err(e) => {
@@ -229,7 +229,7 @@ fn main() {
                     };
                 do_sync(source, destination).await
             })
-        }*/
+        }
         _ => {
             cli.print_help().expect("Can't print help");
             std::process::exit(2);

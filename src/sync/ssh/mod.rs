@@ -36,14 +36,14 @@ fn shell_escape(input: &str) -> String {
 // Then we implement SshSource and SshDestination, which run `remote-send` and
 // `remote-recv` and use SshStream and SshSink to do all the messaging.
 
-struct SshStream<'a, R: AsyncRead + Unpin> {
-    stdout: &'a mut R,
+struct SshStream<R: AsyncRead + Unpin> {
+    stdout: R,
     parser: Parser,
     messages: VecDeque<OwnedMessage>,
 }
 
-impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
-    fn new(stdout: &'a mut R) -> SshStream<'a, R> {
+impl<R: AsyncRead + Unpin> SshStream<R> {
+    fn new(stdout: R) -> SshStream<R> {
         SshStream {
             stdout,
             parser: Default::default(),
@@ -51,14 +51,14 @@ impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
         }
     }
 
-    fn project<'b>(self: &'b mut Pin<Box<SshStream<'a, R>>>) -> (&'b mut R, &'b mut Parser, &'b mut VecDeque<OwnedMessage>) where 'a: 'b {
+    fn project<'b>(self: &'b mut Pin<Box<SshStream<R>>>) -> (&'b mut R, &'b mut Parser, &'b mut VecDeque<OwnedMessage>) where R: 'b {
         unsafe {
             let s = self.as_mut().get_unchecked_mut();
-            (s.stdout, &mut s.parser, &mut s.messages)
+            (&mut s.stdout, &mut s.parser, &mut s.messages)
         }
     }
 
-    fn stream<T: TryFrom<OwnedMessage, Error=()> + Debug>(mut arg: Pin<Box<SshStream<'a, R>>>) -> impl Future<Output=Option<(Result<T, Error>, Pin<Box<SshStream<'a, R>>>)>> {
+    fn stream<T: TryFrom<OwnedMessage, Error=()> + Debug>(mut arg: Pin<Box<SshStream<R>>>) -> impl Future<Output=Option<(Result<T, Error>, Pin<Box<SshStream< R>>>)>> {
         async move {
             let (mut stream, parser, messages) = arg.project();
 
@@ -143,152 +143,106 @@ impl<W: AsyncWrite + Unpin> SshSink<W> {
     }
 }
 
-pub struct SshSource {
-    process: Child,
-}
-
-impl SshSource {
-    pub fn new(loc: &SshLocation) -> Result<SshSource, Error> {
-        let SshLocation { user, host, path } = loc;
-        let connection_arg = match user {
-            Some(user) => {
-                info!("Setting up source {}@{}:{}", user, host, path);
-                format!("{}@{}", user, host)
-            }
-            None => {
-                info!("Setting up source {}:{}", host, path);
-                host.to_owned()
-            }
-        };
-        let escaped_path = shell_escape(path);
-        debug!(
-            "Running command: ssh {} syncfast remote-send {}",
-            connection_arg, escaped_path,
-        );
-        let process: Child = Command::new("ssh")
-            .arg(connection_arg)
-            .arg("syncfast")
-            .arg("remote-send")
-            .arg(escaped_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        Ok(SshSource { process })
-    }
-}
-
-impl Source for SshSource {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
-        let stdin = match self.process.stdin.take() {
-            Some(s) => s,
-            None => panic!("Called streams() twice"),
-        };
-        (
-            futures::stream::unfold(
-                Box::pin(SshStream::new(self.process.stdout.as_mut().unwrap())),
-                SshStream::stream,
-            ).boxed_local(),
-            Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(stdin)),
-                SshSink::sink,
-            )),
-        )
-    }
-}
-
-pub struct SshDestination {
-    process: Child,
-}
-
-impl SshDestination {
-    pub fn new(loc: &SshLocation) -> Result<SshDestination, Error> {
-        let SshLocation { user, host, path } = loc;
-        let connection_arg = match user {
-            Some(user) => {
-                info!("Setting up destination {}@{}:{}", user, host, path);
-                format!("{}@{}", user, host)
-            }
-            None => {
-                info!("Setting up destination {}:{}", host, path);
-                host.to_owned()
-            }
-        };
-        let escaped_path = shell_escape(path);
-        debug!(
-            "Running command: ssh {} syncfast remote-recv {}",
-            connection_arg, escaped_path,
-        );
-        let process: Child = Command::new("ssh")
-            .arg(connection_arg)
-            .arg("syncfast")
-            .arg("remote-recv")
-            .arg(escaped_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        Ok(SshDestination { process })
-    }
-}
-
-impl Destination for SshDestination {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
-        let stdin = match self.process.stdin.take() {
-            Some(s) => s,
-            None => panic!("Called streams() twice"),
-        };
-        (
-            futures::stream::unfold(
-                Box::pin(SshStream::new(self.process.stdout.as_mut().unwrap())),
-                SshStream::stream,
-            ).boxed_local(),
-            Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(stdin)),
-                SshSink::sink,
-            )),
-        )
-    }
-}
-
-pub struct StdioEndpoint {
-    stdin: Stdin,
-}
-
-impl StdioEndpoint {
-    pub fn new() -> StdioEndpoint {
-        StdioEndpoint {
-            stdin: stdin(),
+pub fn ssh_source(loc: &SshLocation) -> Result<Source, Error> {
+    let SshLocation { user, host, path } = loc;
+    let connection_arg = match user {
+        Some(user) => {
+            info!("Setting up source {}@{}:{}", user, host, path);
+            format!("{}@{}", user, host)
         }
+        None => {
+            info!("Setting up source {}:{}", host, path);
+            host.to_owned()
+        }
+    };
+    let escaped_path = shell_escape(path);
+    debug!(
+        "Running command: ssh {} syncfast remote-send {}",
+        connection_arg, escaped_path,
+    );
+    let process: Child = Command::new("ssh")
+        .arg(connection_arg)
+        .arg("syncfast")
+        .arg("remote-send")
+        .arg(escaped_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    Ok(Source {
+        stream: futures::stream::unfold(
+            Box::pin(SshStream::new(process.stdout.unwrap())),
+            SshStream::stream,
+        ).boxed_local(),
+        sink: Box::pin(futures::sink::unfold(
+            Box::pin(SshSink::new(process.stdin.unwrap())),
+            SshSink::sink,
+        )),
+    })
+}
+
+pub fn ssh_destination(loc: &SshLocation) -> Result<Destination, Error> {
+    let SshLocation { user, host, path } = loc;
+    let connection_arg = match user {
+        Some(user) => {
+            info!("Setting up destination {}@{}:{}", user, host, path);
+            format!("{}@{}", user, host)
+        }
+        None => {
+            info!("Setting up destination {}:{}", host, path);
+            host.to_owned()
+        }
+    };
+    let escaped_path = shell_escape(path);
+    debug!(
+        "Running command: ssh {} syncfast remote-recv {}",
+        connection_arg, escaped_path,
+    );
+    let process: Child = Command::new("ssh")
+        .arg(connection_arg)
+        .arg("syncfast")
+        .arg("remote-recv")
+        .arg(escaped_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    Ok(Destination {
+        stream: futures::stream::unfold(
+            Box::pin(SshStream::new(process.stdout.unwrap())),
+            SshStream::stream,
+        ).boxed_local(),
+        sink: Box::pin(futures::sink::unfold(
+            Box::pin(SshSink::new(process.stdin.unwrap())),
+            SshSink::sink,
+        )),
+    })
+}
+
+pub fn stdio_source() -> Source {
+    Source {
+        stream: futures::stream::unfold(
+            Box::pin(SshStream::new(stdin())),
+            SshStream::stream,
+        ).boxed_local(),
+        sink: Box::pin(futures::sink::unfold(
+            Box::pin(SshSink::new(stdout())),
+            SshSink::sink,
+        )),
     }
 }
 
-impl Source for StdioEndpoint {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
-        (
-            futures::stream::unfold(
-                Box::pin(SshStream::new(&mut self.stdin)),
-                SshStream::stream,
-            ).boxed_local(),
-            Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(stdout())),
-                SshSink::sink,
-            )),
-        )
-    }
-}
-
-impl Destination for StdioEndpoint {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
-        (
-            futures::stream::unfold(
-                Box::pin(SshStream::new(&mut self.stdin)),
-                SshStream::stream,
-            ).boxed_local(),
-            Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(stdout())),
-                SshSink::sink,
-            )),
-        )
+pub fn stdio_destination() -> Destination {
+    Destination {
+        stream: futures::stream::unfold(
+            Box::pin(SshStream::new(stdin())),
+            SshStream::stream,
+        ).boxed_local(),
+        sink: Box::pin(futures::sink::unfold(
+            Box::pin(SshSink::new(stdout())),
+            SshSink::sink,
+        )),
     }
 }
