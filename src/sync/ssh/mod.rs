@@ -104,27 +104,27 @@ impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
     }
 }
 
-struct SshSink<'a, W: AsyncWrite + Unpin> {
-    stdin: &'a mut W,
+struct SshSink<W: AsyncWrite + Unpin> {
+    stdin: W,
     buffer: Vec<u8>,
 }
 
-impl<'a, W: AsyncWrite + Unpin> SshSink<'a, W> {
-    fn new(stdin: &'a mut W) -> SshSink<'a, W> {
+impl<W: AsyncWrite + Unpin> SshSink<W> {
+    fn new(stdin: W) -> SshSink< W> {
         SshSink {
             stdin,
             buffer: Vec::new(),
         }
     }
 
-    fn project<'b>(self: &'b mut Pin<Box<SshSink<'a, W>>>) -> (&'b mut W, &'b mut Vec<u8>) where 'a: 'b {
+    fn project<'a>(self: &'a mut Pin<Box<SshSink< W>>>) -> (&'a mut W, &'a mut Vec<u8>) {
         unsafe {
             let s = self.as_mut().get_unchecked_mut();
-            (s.stdin, &mut s.buffer)
+            (&mut s.stdin, &mut s.buffer)
         }
     }
 
-    fn sink<T: Into<OwnedMessage> + Debug>(mut arg: Pin<Box<SshSink<'a, W>>>, event: T) -> impl Future<Output=Result<Pin<Box<SshSink<'a, W>>>, Error>> {
+    fn sink<T: Into<OwnedMessage> + Debug>(mut arg: Pin<Box<SshSink<W>>>, event: T) -> impl Future<Output=Result<Pin<Box<SshSink<W>>>, Error>> {
         async move {
             let (sink, mut buffer) = arg.project();
 
@@ -186,7 +186,7 @@ impl Source for SshSource {
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(self.process.stdin.as_mut().unwrap())),
+                Box::pin(SshSink::new(self.process.stdin.take().unwrap())),
                 SshSink::sink,
             )),
         )
@@ -240,7 +240,7 @@ impl Destination for SshDestination {
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(self.process.stdin.as_mut().unwrap())),
+                Box::pin(SshSink::new(self.process.stdin.take().unwrap())),
                 SshSink::sink,
             )),
         )
@@ -249,14 +249,14 @@ impl Destination for SshDestination {
 
 pub struct StdioEndpoint {
     stdin: Stdin,
-    stdout: Stdout,
+    stdout: Option<Stdout>,
 }
 
 impl StdioEndpoint {
     pub fn new() -> StdioEndpoint {
         StdioEndpoint {
             stdin: stdin(),
-            stdout: stdout(),
+            stdout: Some(stdout()),
         }
     }
 }
@@ -269,7 +269,7 @@ impl Source for StdioEndpoint {
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(&mut self.stdout)),
+                Box::pin(SshSink::new(self.stdout.take().unwrap())),
                 SshSink::sink,
             )),
         )
@@ -284,7 +284,7 @@ impl Destination for StdioEndpoint {
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(&mut self.stdout)),
+                Box::pin(SshSink::new(self.stdout.take().unwrap())),
                 SshSink::sink,
             )),
         )
