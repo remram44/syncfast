@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::Error;
 use crate::sync::{Destination, Source};
 use crate::sync::fs::{fs_destination, fs_source};
+use crate::sync::ssh::{ssh_destination, ssh_source};
 
 /// SSH remote path, with user and host
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -75,7 +76,7 @@ impl Location {
     pub fn open_destination(&self) -> Result<Destination, Error> {
         let w: Destination = match self {
             Location::Local(path) => fs_destination(path.to_owned())?,
-            Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
+            Location::Ssh(ssh) => ssh_destination(ssh)?,
             Location::Http(_url) => {
                 // Shouldn't happen, caught in main.rs
                 return Err(Error::UnsupportedForLocation("Can't write to HTTP location"));
@@ -88,7 +89,7 @@ impl Location {
     pub fn open_source(&self) -> Result<Source, Error> {
         let w: Source = match self {
             Location::Local(path) => fs_source(path.to_owned())?,
-            Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
+            Location::Ssh(ssh) => ssh_source(ssh)?,
             Location::Http(_url) => unimplemented!(), // TODO: HTTP
         };
         Ok(w)

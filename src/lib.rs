@@ -8,6 +8,7 @@
 //! faster.
 
 mod index;
+mod streaming_iterator;
 pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
@@ -23,6 +24,7 @@ pub use index::Index;
 pub enum Error {
     Io(std::io::Error),
     Sqlite(rusqlite::Error),
+    Protocol(Box<dyn std::error::Error + 'static>),
     Sync(String),
     UnsupportedForLocation(&'static str),
     BadFilenameEncoding,
@@ -33,6 +35,7 @@ impl fmt::Display for Error {
         match self {
             Error::Sqlite(e) => write!(f, "SQLite error: {}", e),
             Error::Io(e) => write!(f, "I/O error: {}", e),
+            Error::Protocol(e) => write!(f, "{}", e),
             Error::Sync(e) => write!(f, "{}", e),
             Error::UnsupportedForLocation(e) => write!(f, "{}", e),
             Error::BadFilenameEncoding => write!(f, "Bad filename encoding"),
@@ -42,9 +45,11 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use std::ops::Deref;
         match *self {
             Error::Sqlite(ref e) => Some(e),
             Error::Io(ref e) => Some(e),
+            Error::Protocol(ref e) => Some(e.deref()),
             Error::Sync(..) => None,
             Error::UnsupportedForLocation(..) => None,
             Error::BadFilenameEncoding => None,

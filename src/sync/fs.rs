@@ -2,7 +2,7 @@
 
 use cdchunking::{Chunker, ZPAQ};
 use futures::channel::mpsc::{Receiver, channel};
-use futures::sink::{ SinkExt};
+use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use log::{log_enabled, debug, info};
 use log::Level::Debug;
