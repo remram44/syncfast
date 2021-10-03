@@ -206,16 +206,17 @@ impl Parser {
     pub fn read_async<'a, R: AsyncRead + Unpin>(
         &'a mut self,
         mut reader: R,
-    ) -> impl Future<Output=Result<Messages<'a>, std::io::Error>> {
+    ) -> impl Future<Output=Result<(Messages<'a>, bool), std::io::Error>> {
         async move {
             self.buffer.drain(..self.pos);
             self.pos = 0;
 
-            reader.read_buf(&mut self.buffer).await?;
-            Ok(Messages {
+            let read_len = reader.read_buf(&mut self.buffer).await?;
+            let end = read_len == 0;
+            Ok((Messages {
                 buffer: &mut self.buffer,
                 pos: &mut self.pos,
-            })
+            }, end))
         }
     }
 

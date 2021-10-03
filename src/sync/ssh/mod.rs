@@ -60,7 +60,7 @@ impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
 
     fn stream<T: TryFrom<OwnedMessage, Error=()> + Debug>(mut arg: Pin<Box<SshStream<'a, R>>>) -> impl Future<Output=Option<(Result<T, Error>, Pin<Box<SshStream<'a, R>>>)>> {
         async move {
-            let (stream, parser, messages) = arg.project();
+            let (mut stream, parser, messages) = arg.project();
 
             macro_rules! err {
                 ($e:expr) => {
@@ -77,10 +77,12 @@ impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
                 }
             }
 
-            if messages.is_empty() {
+            let mut end = false;
+            while messages.is_empty() && !end {
                 // FIXME: Store the iterator instead of a vector of values,
                 // however this makes it self-referential...
-                let mut iterator = try_!(parser.read_async(stream).await);
+                let (mut iterator, end_) = try_!(parser.read_async(&mut stream).await);
+                end = end_;
                 loop {
                     match iterator.next() {
                         Some(Ok(msg)) => messages.push_back(msg.into()),
