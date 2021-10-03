@@ -18,7 +18,7 @@ pub type ConditionFuture = Map<Receiver<()>, fn(Result<(), Canceled>)>;
 
 impl Condition {
     pub fn set(&mut self) {
-        let sender = self.sender.take().expect("Condition:;set() called twice");
+        let sender = self.sender.take().expect("Condition::set() called twice");
         sender.send(()).expect("Condition::set()");
     }
 
