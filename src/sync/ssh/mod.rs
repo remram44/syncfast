@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, Stdin, Stdout, stdin, stdout};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, Stdin, stdin, stdout};
 use tokio::process::{Child, Command};
 
 use crate::Error;
@@ -182,13 +182,17 @@ impl SshSource {
 
 impl Source for SshSource {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
+        let stdin = match self.process.stdin.take() {
+            Some(s) => s,
+            None => panic!("Called streams() twice"),
+        };
         (
             futures::stream::unfold(
                 Box::pin(SshStream::new(self.process.stdout.as_mut().unwrap())),
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(self.process.stdin.take().unwrap())),
+                Box::pin(SshSink::new(stdin)),
                 SshSink::sink,
             )),
         )
@@ -236,13 +240,17 @@ impl SshDestination {
 
 impl Destination for SshDestination {
     fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
+        let stdin = match self.process.stdin.take() {
+            Some(s) => s,
+            None => panic!("Called streams() twice"),
+        };
         (
             futures::stream::unfold(
                 Box::pin(SshStream::new(self.process.stdout.as_mut().unwrap())),
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(self.process.stdin.take().unwrap())),
+                Box::pin(SshSink::new(stdin)),
                 SshSink::sink,
             )),
         )
@@ -251,14 +259,12 @@ impl Destination for SshDestination {
 
 pub struct StdioEndpoint {
     stdin: Stdin,
-    stdout: Option<Stdout>,
 }
 
 impl StdioEndpoint {
     pub fn new() -> StdioEndpoint {
         StdioEndpoint {
             stdin: stdin(),
-            stdout: Some(stdout()),
         }
     }
 }
@@ -271,7 +277,7 @@ impl Source for StdioEndpoint {
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(self.stdout.take().unwrap())),
+                Box::pin(SshSink::new(stdout())),
                 SshSink::sink,
             )),
         )
@@ -286,7 +292,7 @@ impl Destination for StdioEndpoint {
                 SshStream::stream,
             ).boxed_local(),
             Box::pin(futures::sink::unfold(
-                Box::pin(SshSink::new(self.stdout.take().unwrap())),
+                Box::pin(SshSink::new(stdout())),
                 SshSink::sink,
             )),
         )
