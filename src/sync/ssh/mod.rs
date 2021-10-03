@@ -130,7 +130,7 @@ impl<W: AsyncWrite + Unpin> SshSink<W> {
 
             debug!("ssh: send {:?}", event);
             write_message(&event.into(), &mut buffer)?;
-            eprintln!("send \"{}\"", String::from_utf8_lossy(&buffer));
+            //eprintln!("send \"{}\"", String::from_utf8_lossy(&buffer));
             sink.write_all(buffer).await?;
             sink.flush().await?;
             buffer.clear();
