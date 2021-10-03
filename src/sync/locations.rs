@@ -79,10 +79,7 @@ impl Location {
             Location::Ssh(ssh) => Box::new(SshDestination::new(ssh)?),
             Location::Http(_url) => {
                 // Shouldn't happen, caught in main.rs
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Can't write to HTTP location",
-                )));
+                return Err(Error::UnsupportedForLocation("Can't write to HTTP location"));
             }
         };
         Ok(w)

@@ -86,7 +86,7 @@ impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
                 loop {
                     match iterator.next() {
                         Some(Ok(msg)) => messages.push_back(msg.into()),
-                        Some(Err(e)) => return err!(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                        Some(Err(e)) => return err!(e),
                         None => break,
                     }
                 }
@@ -95,7 +95,9 @@ impl<'a, R: AsyncRead + Unpin> SshStream<'a, R> {
                 Some(msg) => {
                     let event = match msg.try_into() {
                         Ok(e) => e,
-                        Err(()) => return err!(std::io::Error::new(std::io::ErrorKind::InvalidData, "Message is not valid for this mode")),
+                        Err(()) => return err!(Error::Protocol(Box::new(
+                            proto::Error("Message is not valid for this mode"),
+                        ))),
                     };
                     debug!("ssh: recv {:?}", event);
                     Some((Ok(event), arg))

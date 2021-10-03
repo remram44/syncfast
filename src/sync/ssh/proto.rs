@@ -10,7 +10,7 @@ use crate::streaming_iterator::StreamingIterator;
 use crate::sync::{DestinationEvent, SourceEvent};
 
 #[derive(Debug)]
-pub struct Error(&'static str);
+pub struct Error(pub &'static str);
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -19,6 +19,12 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl Into<crate::Error> for Error {
+    fn into(self) -> crate::Error {
+        crate::Error::Protocol(Box::new(self))
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Message<'a> {

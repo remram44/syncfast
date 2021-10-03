@@ -27,7 +27,13 @@ fn read_block(path: &Path, offset: usize) -> Result<Vec<u8>, Error> {
     let chunker = Chunker::new(
         ZPAQ::new(ZPAQ_BITS),
     ).max_size(MAX_BLOCK_SIZE);
-    let block = chunker.whole_chunks(file).next().unwrap()?;
+    let block = chunker.whole_chunks(file).next()
+        .unwrap_or(Err(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "No such chunk in file",
+            ),
+        ))?;
     Ok(block)
 }
 
@@ -188,7 +194,7 @@ impl<'a> FsSourceFrom<'a> {
                             let path_str = String::from_utf8(path).expect("encoding");
                             let (file_id, _modified, _blocks_hash) = match try_!(index.get_file(Path::new(&path_str))) {
                                 Some(t) => t,
-                                None => return err!(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Requested file is unknown"))),
+                                None => return err!(Error::Sync("Requested file is unknown".to_owned())),
                             };
                             debug!("FsSource: file_id={}", file_id);
                             // FIXME: Don't get all blocks at once, iterate
@@ -206,7 +212,7 @@ impl<'a> FsSourceFrom<'a> {
                         DestinationEvent::GetBlock(hash) => {
                             let (path, offset, _size) = match try_!(index.get_block(&hash)) {
                                 Some(t) => t,
-                                None => return err!(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Requested block is unknown"))),
+                                None => return err!(Error::Sync("Requested block is unknown".to_owned())),
                             };
                             debug!("FsSource: found block in {:?} offset {}", path, offset);
                             let data = try_!(read_block(&root_dir.join(&path), offset));
@@ -465,7 +471,7 @@ impl<'a> FsDestinationInner<'a> {
                                 }
                                 cond.set();
                             }
-                            _ => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source"))),
+                            _ => return Err(Error::Sync("Unexpected message from source".to_owned())),
                         }
                     }
                     // Receive blocks for files
@@ -476,7 +482,7 @@ impl<'a> FsDestinationInner<'a> {
                                     .expect("encoding")
                                     .into();
                                 let (file_id, _modified) = index.get_temp_file(&path)?
-                                    .ok_or(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Unknown file {:?}", path)))?;
+                                    .ok_or(Error::Sync(format!("Unknown file {:?}", path)))?;
                                 Some((file_id, 0))
                             }
                             // FIXME: Don't need to capture all of them by ref,
@@ -519,7 +525,7 @@ impl<'a> FsDestinationInner<'a> {
                                 }
                                 None
                             }
-                            _ => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source"))),
+                            _ => return Err(Error::Sync("Unexpected message from source".to_owned())),
                         }
                     }
                     // Receiving block data
@@ -537,7 +543,7 @@ impl<'a> FsDestinationInner<'a> {
                                     Self::finish(root_dir, index)?;
                                 }
                             }
-                            _ => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unexpected message from source"))),
+                            _ => return Err(Error::Sync("Unexpected message from source".to_owned())),
                         }
                     }
                 }
@@ -552,10 +558,9 @@ impl<'a> FsDestinationInner<'a> {
     fn finish(root_dir: &Path, index: &mut Index) -> Result<(), Error> {
         for (file_id, name, missing_blocks) in index.check_temp_files()? {
             if missing_blocks {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
+                return Err(Error::Sync(
                     format!("Missing blocks in file {:?}", name),
-                )));
+                ));
             }
 
             let final_name = untemp_name(&name)?;
