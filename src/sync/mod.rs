@@ -90,7 +90,7 @@ pub trait Source {
 /// destination encapsulating some network protocol, and the receiving side has
 /// a destination that actually updates files.
 pub trait Destination {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>);
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>);
 }
 
 // Generic impls for mutable references to trait objects (dynamic dispatch)
@@ -102,7 +102,7 @@ impl Source for &mut dyn Source {
 }
 
 impl Destination for &mut dyn Destination {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
         (*self).streams()
     }
 }
@@ -117,7 +117,7 @@ impl Source for Box<dyn Source> {
 }
 
 impl Destination for Box<dyn Destination> {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
         let s: &'a mut dyn Destination = self.as_mut();
         s.streams()
     }

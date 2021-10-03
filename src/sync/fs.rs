@@ -268,7 +268,7 @@ impl FsDestination {
 }
 
 impl Destination for FsDestination {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error>+ 'a>>) {
+    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
         // The destination has to handle input while producing output (for
         // example getting BlockData while sending GetBlock), so it has both a
         // custom Stream and Sink implementations
