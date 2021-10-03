@@ -151,21 +151,12 @@ pub async fn do_sync<S: Source, R: Destination>(
 
     // Concurrently forward streams into sinks
     let (r1, r2) = join!(
-        async move {
-            let r = source_from.forward(destination_to).await;
-            info!("End of source stream");
-            r
-        },
-        async move {
-            let r = destination_from.forward(source_to).await;
-            info!("End of destination stream");
-            r
-        },
+        source_from.forward(destination_to),
+        destination_from.forward(source_to),
     );
     r1?;
     r2?;
     info!("Sync complete");
-    std::thread::sleep(std::time::Duration::new(5, 0));
 
     Ok(())
 }
