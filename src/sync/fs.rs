@@ -50,54 +50,36 @@ fn write_block(
     Ok(())
 }
 
-pub struct FsSource {
-    index: Index,
-    root_dir: PathBuf,
-}
+pub fn fs_source(root_dir: PathBuf) -> Result<Source, Error> {
+    info!("Indexing source into {:?}...", root_dir.join(".syncfast.idx"));
+    let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
+    index.index_path(&root_dir)?;
+    index.remove_missing_files(&root_dir)?;
+    index.commit()?;
 
-impl FsSource {
-    /// Create a source from a directory, indexing it immediately
-    pub fn new(
-        root_dir: PathBuf,
-    ) -> Result<FsSource, Error> {
-        info!("Indexing source into {:?}...", root_dir.join(".syncfast.idx"));
-        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
-        index.index_path(&root_dir)?;
-        index.remove_missing_files(&root_dir)?;
-        index.commit()?;
-        Ok(FsSource {
-            index,
-            root_dir,
-        })
-    }
-}
-
-impl Source for FsSource {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<SourceEvent, Error>>, Pin<Box<dyn Sink<DestinationEvent, Error=Error> + 'a>>) {
-        // The source can't handle multiple input events, so we just implement
-        // a Stream, and use a channel for the Sink
-        debug!("FsSource: state=ListFiles");
-        let (sender, receiver) = channel(1);
-        (
-            // Stream generating events using FsSourceFrom::stream
-            futures::stream::unfold(
-                Box::pin(FsSourceFrom {
-                    index: &mut self.index,
-                    root_dir: &self.root_dir,
-                    receiver,
-                    state: FsSourceState::ListFiles(None),
-                }),
-                FsSourceFrom::stream,
-            ).boxed_local(),
-            // Simple Sink feeding the channel for the Stream to read
-            Box::pin(futures::sink::unfold((), move |(), event: DestinationEvent| {
-                let mut sender = sender.clone();
-                async move {
-                    sender.send(event).await.map_err(|_| Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "FsSource channel is closed")))
-                }
-            })),
-        )
-    }
+    // The source can't handle multiple input events, so we just implement
+    // a Stream, and use a channel for the Sink
+    debug!("FsSource: state=ListFiles");
+    let (sender, receiver) = channel(1);
+    Ok(Source {
+        // Stream generating events using FsSourceFrom::stream
+        stream: futures::stream::unfold(
+            Box::pin(FsSourceFrom {
+                index,
+                root_dir,
+                receiver,
+                state: FsSourceState::ListFiles(None),
+            }),
+            FsSourceFrom::stream,
+        ).boxed_local(),
+        // Simple Sink feeding the channel for the Stream to read
+        sink: Box::pin(futures::sink::unfold((), move |(), event: DestinationEvent| {
+            let mut sender = sender.clone();
+            async move {
+                sender.send(event).await.map_err(|_| Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "FsSource channel is closed")))
+            }
+        })),
+    })
 }
 
 enum FsSourceState {
@@ -107,20 +89,20 @@ enum FsSourceState {
     Done,
 }
 
-struct FsSourceFrom<'a> {
-    index: &'a mut Index,
-    root_dir: &'a Path,
+struct FsSourceFrom {
+    index: Index,
+    root_dir: PathBuf,
     receiver: Receiver<DestinationEvent>,
     state: FsSourceState,
 }
 
-impl<'a> FsSourceFrom<'a> {
-    fn project<'b>(self: &'b mut Pin<Box<Self>>) -> (&'b mut Index, &'b Path, Pin<&'b mut Receiver<DestinationEvent>>, &'b mut FsSourceState) where 'a: 'b {
+impl FsSourceFrom {
+    fn project<'b>(self: &'b mut Pin<Box<Self>>) -> (&'b mut Index, &'b Path, Pin<&'b mut Receiver<DestinationEvent>>, &'b mut FsSourceState) {
         unsafe { // Required for pin projection
             let s = self.as_mut().get_unchecked_mut();
             (
-                s.index,
-                s.root_dir,
+                &mut s.index,
+                &mut s.root_dir,
                 Pin::new_unchecked(&mut s.receiver),
                 &mut s.state,
             )
@@ -254,60 +236,44 @@ impl<'a> FsSourceFrom<'a> {
     }
 }
 
-pub struct FsDestination {
+pub fn fs_destination(root_dir: PathBuf) -> Result<Destination, Error> {
+    info!(
+        "Indexing destination into {:?}...",
+        root_dir.join(".syncfast.idx")
+    );
+    std::fs::create_dir_all(&root_dir)?;
+    let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
+    index.index_path(&root_dir)?;
+    index.remove_missing_files(&root_dir)?;
+    index.commit()?;
+
+    // The destination has to handle input while producing output (for
+    // example getting BlockData while sending GetBlock), so it has both a
+    // custom Stream and Sink implementations
+    // State changes are triggered by Sink
+    let destination = Rc::new(RefCell::new(FsDestinationInner {
+        index,
+        root_dir,
+        state: FsDestinationState::FilesList { cond: Default::default() },
+    }));
+    debug!("FsDestination: state=FilesList");
+    Ok(Destination {
+        // Stream generating events using FsDestination::stream
+        stream: futures::stream::unfold(
+            destination.clone(),
+            FsDestinationInner::stream,
+        ).boxed_local(),
+        // Sink handling events using FsDestination::sink
+        sink: Box::pin(futures::sink::unfold(
+            destination,
+            FsDestinationInner::sink,
+        )),
+    })
+}
+
+struct FsDestinationInner {
     index: Index,
     root_dir: PathBuf,
-}
-
-impl FsDestination {
-    /// Create a destination from a directory, indexing it immediately
-    pub fn new(root_dir: PathBuf) -> Result<FsDestination, Error> {
-        info!(
-            "Indexing destination into {:?}...",
-            root_dir.join(".syncfast.idx")
-        );
-        std::fs::create_dir_all(&root_dir)?;
-        let mut index = Index::open(&root_dir.join(".syncfast.idx"))?;
-        index.index_path(&root_dir)?;
-        index.remove_missing_files(&root_dir)?;
-        index.commit()?;
-        Ok(FsDestination {
-            index,
-            root_dir,
-        })
-    }
-}
-
-impl Destination for FsDestination {
-    fn streams<'a>(&'a mut self) -> (LocalBoxStream<'a, Result<DestinationEvent, Error>>, Pin<Box<dyn Sink<SourceEvent, Error=Error> + 'a>>) {
-        // The destination has to handle input while producing output (for
-        // example getting BlockData while sending GetBlock), so it has both a
-        // custom Stream and Sink implementations
-        // State changes are triggered by Sink
-        let destination = Rc::new(RefCell::new(FsDestinationInner {
-            index: &mut self.index,
-            root_dir: &self.root_dir,
-            state: FsDestinationState::FilesList { cond: Default::default() },
-        }));
-        debug!("FsDestination: state=FilesList");
-        (
-            // Stream generating events using FsDestination::stream
-            futures::stream::unfold(
-                destination.clone(),
-                FsDestinationInner::stream,
-            ).boxed_local(),
-            // Sink handling events using FsDestination::sink
-            Box::pin(futures::sink::unfold(
-                destination,
-                FsDestinationInner::sink,
-            )),
-        )
-    }
-}
-
-struct FsDestinationInner<'a> {
-    index: &'a mut Index,
-    root_dir: &'a Path,
     state: FsDestinationState,
 }
 
@@ -334,7 +300,7 @@ enum FsDestinationState {
     },
 }
 
-impl<'a> FsDestinationInner<'a> {
+impl FsDestinationInner {
     fn stream(inner: Rc<RefCell<FsDestinationInner>>) -> impl Future<Output=Option<(Result<DestinationEvent, Error>, Rc<RefCell<FsDestinationInner>>)>> {
         async move {
             loop {
