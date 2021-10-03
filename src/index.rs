@@ -113,7 +113,7 @@ impl Index {
             WHERE name = ? AND temporary = 0;
             ",
         )?;
-        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
+        let mut rows = stmt.query(&[name.to_str().ok_or(Error::BadFilenameEncoding)?])?;
         if let Some(row) = rows.next() {
             let row = row?;
             let file_id = row.get(0);
@@ -138,7 +138,7 @@ impl Index {
             WHERE name = ? AND temporary = 1;
             ",
         )?;
-        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
+        let mut rows = stmt.query(&[name.to_str().ok_or(Error::BadFilenameEncoding)?])?;
         if let Some(row) = rows.next() {
             let row = row?;
             let file_id = row.get(0);
@@ -210,7 +210,7 @@ impl Index {
                 INSERT INTO files(name, modified, temporary)
                 VALUES(?, ?, 0);
                 ",
-                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
+                &[&name.to_str().ok_or(Error::BadFilenameEncoding)? as &dyn ToSql, &modified],
             )?;
             let file_id = self.db.last_insert_rowid();
             Ok((file_id as u32, false))
@@ -252,7 +252,7 @@ impl Index {
                 INSERT INTO files(name, modified, temporary)
                 VALUES(?, ?, 0);
                 ",
-                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
+                &[&name.to_str().ok_or(Error::BadFilenameEncoding)? as &dyn ToSql, &modified],
             )?;
             let file_id = self.db.last_insert_rowid();
             Ok(file_id as u32)
@@ -292,7 +292,7 @@ impl Index {
                 INSERT INTO files(name, modified, temporary)
                 VALUES(?, ?, 1);
                 ",
-                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
+                &[&name.to_str().ok_or(Error::BadFilenameEncoding)? as &dyn ToSql, &modified],
             )?;
             let file_id = self.db.last_insert_rowid();
             Ok(file_id as u32)
@@ -324,7 +324,7 @@ impl Index {
         destination: &Path,
     ) -> Result<(), Error> {
         self.begin()?;
-        let destination = destination.to_str().expect("encoding");
+        let destination = destination.to_str().ok_or(Error::BadFilenameEncoding)?;
 
         // Delete old file
         self.db.execute(

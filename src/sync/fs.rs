@@ -8,6 +8,7 @@ use log::{log_enabled, debug, info};
 use log::Level::Debug;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Seek, SeekFrom, Write};
@@ -15,6 +16,7 @@ use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
+use std::string::FromUtf8Error;
 
 use crate::{Error, HashDigest, temp_name, untemp_name};
 use crate::index::{MAX_BLOCK_SIZE, ZPAQ_BITS, Index};
@@ -155,9 +157,9 @@ impl<'a> FsSourceFrom<'a> {
                         for (_file_id, path, _modified, size, blocks_hash) in files {
                             let path = path
                                 .into_os_string()
-                                .into_string()
-                                .expect("encoding")
-                                .into_bytes();
+                                .into_string();
+                            let path = try_!(path.map_err(|_: OsString| Error::BadFilenameEncoding));
+                            let path = path.into_bytes();
                             new_list.push_back((path, size as usize, blocks_hash));
                         }
                         debug!("FsSource: preparing to send {} files", new_list.len());
@@ -191,7 +193,10 @@ impl<'a> FsSourceFrom<'a> {
                     debug!("FsSource: recv {:?}", req);
                     match req {
                         DestinationEvent::GetFile(path) => {
-                            let path_str = String::from_utf8(path).expect("encoding");
+                            let path_str = try_!(
+                                String::from_utf8(path)
+                                    .map_err(|_: FromUtf8Error| Error::BadFilenameEncoding)
+                            );
                             let (file_id, _modified, _blocks_hash) = match try_!(index.get_file(Path::new(&path_str))) {
                                 Some(t) => t,
                                 None => return err!(Error::Sync("Requested file is unknown".to_owned())),
@@ -408,7 +413,7 @@ impl<'a> FsDestinationInner<'a> {
                         match event {
                             SourceEvent::FileEntry(path, _size, blocks_hash) => {
                                 let path: PathBuf = String::from_utf8(path)
-                                    .expect("encoding")
+                                    .map_err(|_: FromUtf8Error| Error::BadFilenameEncoding)?
                                     .into();
                                 let file = inner_.index.get_file(&path)?;
                                 let add = match file {
@@ -449,7 +454,7 @@ impl<'a> FsDestinationInner<'a> {
                                     let name = name
                                         .into_os_string()
                                         .into_string()
-                                        .expect("encoding")
+                                        .map_err(|_: OsString| Error::BadFilenameEncoding)?
                                         .into_bytes();
                                     files_to_request.push_back(name);
                                 }
@@ -479,7 +484,7 @@ impl<'a> FsDestinationInner<'a> {
                         *file_blocks_id = match (*file_blocks_id, event) {
                             (None, SourceEvent::FileStart(path)) => {
                                 let path: PathBuf = String::from_utf8(path)
-                                    .expect("encoding")
+                                    .map_err(|_: FromUtf8Error| Error::BadFilenameEncoding)?
                                     .into();
                                 let (file_id, _modified) = index.get_temp_file(&path)?
                                     .ok_or(Error::Sync(format!("Unknown file {:?}", path)))?;

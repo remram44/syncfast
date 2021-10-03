@@ -27,6 +27,7 @@ pub enum Error {
     Protocol(Box<dyn std::error::Error + 'static>),
     Sync(String),
     UnsupportedForLocation(&'static str),
+    BadFilenameEncoding,
 }
 
 impl fmt::Display for Error {
@@ -37,6 +38,7 @@ impl fmt::Display for Error {
             Error::Protocol(e) => write!(f, "{}", e),
             Error::Sync(e) => write!(f, "{}", e),
             Error::UnsupportedForLocation(e) => write!(f, "{}", e),
+            Error::BadFilenameEncoding => write!(f, "Bad filename encoding"),
         }
     }
 }
@@ -50,6 +52,7 @@ impl std::error::Error for Error {
             Error::Protocol(ref e) => Some(e.deref()),
             Error::Sync(..) => None,
             Error::UnsupportedForLocation(..) => None,
+            Error::BadFilenameEncoding => None,
         }
     }
 }
@@ -162,7 +165,7 @@ fn untemp_name(name: &Path) -> Result<PathBuf, Error> {
     let temp_name = name.file_name().ok_or(
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"),
     )?;
-    let temp_name = temp_name.to_str().expect("encoding");
+    let temp_name = temp_name.to_str().ok_or(Error::BadFilenameEncoding)?;
     let stripped_name = temp_name.strip_prefix(".syncfast_tmp_").ok_or(
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "Not a temporary path"),
     )?;
