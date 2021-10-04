@@ -1,6 +1,6 @@
 [package]
 name = "syncfast"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2018"
 authors = ["Remi Rampin <r@remirampin.com>"]
 description = "rsync/rdiff/zsync clone"
