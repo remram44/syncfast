@@ -1,6 +1,6 @@
 //! Rsync-like library/program.
 //!
-//! Rrsync is intended to provide the functionality of rsync ("live" transfer
+//! syncfast is intended to provide the functionality of rsync ("live" transfer
 //! of files/directories over SSH), rdiff (creation of binary patches between
 //! files, for later application), and zsync (efficient synchronization of
 //! files or file trees from a central "dumb" HTTP server). It also has some
@@ -120,7 +120,7 @@ impl FromSql for HashDigest {
                     InvalidHashDigest::WrongSize,
                 )))
             } else {
-                let mut bytes = [0u8; 20];
+                let mut bytes = [0u8; HASH_DIGEST_LEN];
                 for (i, byte) in (&mut bytes).iter_mut().enumerate() {
                     *byte = u8::from_str_radix(&s[i * 2 .. i * 2 + 2], 16)
                         .map_err(|_| {
