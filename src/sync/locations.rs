@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use crate::Error;
 use crate::sync::{Destination, Source};
-use crate::sync::fs::{FsDestination, FsSource};
+use crate::sync::fs::{fs_destination, fs_source};
+use crate::sync::ssh::{ssh_destination, ssh_source};
 
 /// SSH remote path, with user and host
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -34,18 +35,18 @@ impl Location {
         if s.starts_with("http://") || s.starts_with("https://") {
             Some(Location::Http(s.into()))
         } else if s.starts_with("ssh://") {
-            let idx_colon = match s[6 ..].find(':') {
+            let idx_slash = match s[6 ..].find('/') {
                 Some(i) => i + 6,
                 None => return None,
             };
             let (user, host) = match s[6 ..].find('@') {
-                Some(idx_at) if idx_at + 6 < idx_colon => {
+                Some(idx_at) if idx_at + 6 < idx_slash => {
                     let idx_at = idx_at + 6;
-                    (Some(&s[6 .. idx_at]), &s[idx_at + 1 .. idx_colon])
+                    (Some(&s[6 .. idx_at]), &s[idx_at + 1 .. idx_slash])
                 }
-                _ => (None, &s[6 .. idx_colon]),
+                _ => (None, &s[6 .. idx_slash]),
             };
-            let path = &s[idx_colon + 1 ..];
+            let path = &s[idx_slash ..];
 
             Some(Location::Ssh(SshLocation {
                 user: user.map(Into::into),
@@ -72,26 +73,23 @@ impl Location {
     }
 
     /// Create a `Destination` to sync to this location
-    pub fn open_destination(&self) -> Result<Box<dyn Destination>, Error> {
-        let w = match self {
-            Location::Local(path) => Box::new(FsDestination::new(path.to_owned())?),
-            Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
+    pub fn open_destination(&self) -> Result<Destination, Error> {
+        let w: Destination = match self {
+            Location::Local(path) => fs_destination(path.to_owned())?,
+            Location::Ssh(ssh) => ssh_destination(ssh)?,
             Location::Http(_url) => {
                 // Shouldn't happen, caught in main.rs
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Can't write to HTTP location",
-                )));
+                return Err(Error::UnsupportedForLocation("Can't write to HTTP location"));
             }
         };
         Ok(w)
     }
 
     /// Create a `Source` to sync from this location
-    pub fn open_source(&self) -> Result<Box<dyn Source>, Error> {
-        let w = match self {
-            Location::Local(path) => Box::new(FsSource::new(path.to_owned())?),
-            Location::Ssh(_ssh) => unimplemented!(), // TODO: SSH
+    pub fn open_source(&self) -> Result<Source, Error> {
+        let w: Source = match self {
+            Location::Local(path) => fs_source(path.to_owned())?,
+            Location::Ssh(ssh) => ssh_source(ssh)?,
             Location::Http(_url) => unimplemented!(), // TODO: HTTP
         };
         Ok(w)
@@ -127,19 +125,19 @@ mod tests {
         );
         assert_eq!(Location::parse("file://file"), None);
         assert_eq!(
-            Location::parse("ssh://user@host:path"),
+            Location::parse("ssh://user@host/path"),
             Some(Location::Ssh(SshLocation {
                 user: Some("user".into()),
                 host: "host".into(),
-                path: "path".into(),
+                path: "/path".into(),
             })),
         );
         assert_eq!(
-            Location::parse("ssh://host:"),
+            Location::parse("ssh://host/"),
             Some(Location::Ssh(SshLocation {
                 user: None,
                 host: "host".into(),
-                path: "".into(),
+                path: "/".into(),
             })),
         );
         assert_eq!(Location::parse("ssh://host"), None);

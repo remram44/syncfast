@@ -7,7 +7,7 @@ use sha1::Sha1;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::{Error, HashDigest};
+use crate::{Error, HashDigest, temp_name};
 
 const SCHEMA: &str = "
     CREATE TABLE files(
@@ -15,7 +15,8 @@ const SCHEMA: &str = "
         name VARCHAR(512) NOT NULL,
         modified DATETIME NOT NULL,
         size INTEGER NULL,
-        blocks_hash VARCHAR(40) NULL
+        blocks_hash VARCHAR(40) NULL,
+        temporary BOOLEAN NOT NULL
     );
     CREATE INDEX idx_files_name ON files(name);
 
@@ -82,7 +83,7 @@ impl Index {
             SELECT files.name, blocks.offset, blocks.size
             FROM blocks
             INNER JOIN files ON blocks.file_id = files.file_id
-            WHERE blocks.hash = ?;
+            WHERE blocks.hash = ? AND blocks.present = 1;
             ",
         )?;
         let mut rows = stmt.query(&[hash as &dyn ToSql])?;
@@ -107,17 +108,61 @@ impl Index {
     ) -> Result<Option<(u32, chrono::DateTime<chrono::Utc>, HashDigest)>, Error> {
         let mut stmt = self.db.prepare(
             "
-            SELECT file_id, modified, blocks_hash FROM files
-            WHERE name = ?;
+            SELECT file_id, modified, blocks_hash
+            FROM files
+            WHERE name = ? AND temporary = 0;
             ",
         )?;
-        let mut rows = stmt.query(&[name.to_str().expect("encoding")])?;
+        let mut rows = stmt.query(&[name.to_str().ok_or(Error::BadFilenameEncoding)?])?;
         if let Some(row) = rows.next() {
             let row = row?;
             let file_id = row.get(0);
             let modified = row.get(1);
             let blocks_hash = row.get(2);
             Ok(Some((file_id, modified, blocks_hash)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Try to get a temporary file from its name
+    pub fn get_temp_file(
+        &self,
+        name: &Path,
+    ) -> Result<Option<(u32, chrono::DateTime<chrono::Utc>)>, Error> {
+        let name = temp_name(&name)?;
+        let mut stmt = self.db.prepare(
+            "
+            SELECT file_id, modified
+            FROM files
+            WHERE name = ? AND temporary = 1;
+            ",
+        )?;
+        let mut rows = stmt.query(&[name.to_str().ok_or(Error::BadFilenameEncoding)?])?;
+        if let Some(row) = rows.next() {
+            let row = row?;
+            let file_id = row.get(0);
+            let modified = row.get(1);
+            Ok(Some((file_id, modified)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get the name of a file from its ID
+    pub fn get_file_name(&self, file_id: u32) -> Result<Option<PathBuf>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT name
+            FROM files
+            WHERE file_id = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[file_id])?;
+        if let Some(row) = rows.next() {
+            let row = row?;
+            let path: String = row.get(0);
+            Ok(Some(path.into()))
         } else {
             Ok(None)
         }
@@ -148,7 +193,7 @@ impl Index {
                 self.db.execute(
                     "
                     UPDATE files
-                    SET modified = ?, size = NULL, blocks_hash = NULL
+                    SET modified = ?, size = NULL, blocks_hash = NULL, temporary = 0
                     WHERE file_id = ?;
                     ",
                     &[&modified as &dyn ToSql, &file_id],
@@ -162,10 +207,10 @@ impl Index {
             info!("Inserting new file {:?}", name);
             self.db.execute(
                 "
-                INSERT INTO files(name, modified)
-                VALUES(?, ?);
+                INSERT INTO files(name, modified, temporary)
+                VALUES(?, ?, 0);
                 ",
-                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
+                &[&name.to_str().ok_or(Error::BadFilenameEncoding)? as &dyn ToSql, &modified],
             )?;
             let file_id = self.db.last_insert_rowid();
             Ok((file_id as u32, false))
@@ -194,7 +239,7 @@ impl Index {
             self.db.execute(
                 "
                 UPDATE files
-                SET modified = ?, size = NULL, blocks_hash = NULL
+                SET modified = ?, size = NULL, blocks_hash = NULL, temporary = 0
                 WHERE file_id = ?;
                 ",
                 &[&modified as &dyn ToSql, &file_id],
@@ -204,10 +249,50 @@ impl Index {
             info!("Inserting new file {:?}", name);
             self.db.execute(
                 "
-                INSERT INTO files(name, modified)
-                VALUES(?, ?);
+                INSERT INTO files(name, modified, temporary)
+                VALUES(?, ?, 0);
                 ",
-                &[&name.to_str().expect("encoding") as &dyn ToSql, &modified],
+                &[&name.to_str().ok_or(Error::BadFilenameEncoding)? as &dyn ToSql, &modified],
+            )?;
+            let file_id = self.db.last_insert_rowid();
+            Ok(file_id as u32)
+        }
+    }
+
+    pub fn add_temp_file(
+        &mut self,
+        name: &Path,
+    ) -> Result<u32, Error> {
+        self.begin()?;
+        let modified: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+        let name = temp_name(name)?;
+        if let Some((file_id, _, _)) = self.get_file(&name)? {
+            info!("Resetting file {:?}", name);
+            // Delete blocks
+            self.db.execute(
+                "
+                DELETE FROM blocks WHERE file_id = ?;
+                ",
+                &[&file_id],
+            )?;
+            // Update modification time
+            self.db.execute(
+                "
+                UPDATE files
+                SET modified = ?, size = NULL, blocks_hash = NULL, temporary = 1
+                WHERE file_id = ?;
+                ",
+                &[&modified as &dyn ToSql, &file_id],
+            )?;
+            Ok(file_id)
+        } else {
+            info!("Inserting new file {:?}", name);
+            self.db.execute(
+                "
+                INSERT INTO files(name, modified, temporary)
+                VALUES(?, ?, 1);
+                ",
+                &[&name.to_str().ok_or(Error::BadFilenameEncoding)? as &dyn ToSql, &modified],
             )?;
             let file_id = self.db.last_insert_rowid();
             Ok(file_id as u32)
@@ -233,19 +318,20 @@ impl Index {
     }
 
     /// Move a file, possibly over another
-    pub fn move_file(
+    pub fn move_temp_file_into_place(
         &mut self,
         file_id: u32,
         destination: &Path,
     ) -> Result<(), Error> {
         self.begin()?;
-        let destination = destination.to_str().expect("encoding");
+        let destination = destination.to_str().ok_or(Error::BadFilenameEncoding)?;
 
         // Delete old file
         self.db.execute(
             "
             DELETE FROM blocks WHERE file_id = (
-                SELECT file_id FROM files
+                SELECT file_id
+                FROM files
                 WHERE name = ?
             );
             ",
@@ -258,10 +344,10 @@ impl Index {
             &[destination],
         )?;
 
-        // Move new file
+        // Move new file, clear temporary flag
         self.db.execute(
             "
-            UPDATE files SET name = ?
+            UPDATE files SET name = ?, temporary = 0
             WHERE file_id = ?;
             ",
             &[&destination as &dyn ToSql, &file_id],
@@ -272,11 +358,13 @@ impl Index {
     /// Get a list of all the files in the index
     pub fn list_files(
         &self,
-    ) -> Result<Vec<(u32, PathBuf, chrono::DateTime<chrono::Utc>)>, Error>
+    ) -> Result<Vec<(u32, PathBuf, chrono::DateTime<chrono::Utc>, usize, HashDigest)>, Error>
     {
         let mut stmt = self.db.prepare(
             "
-            SELECT file_id, name, modified FROM files;
+            SELECT file_id, name, modified, size, blocks_hash
+            FROM files
+            WHERE temporary = 0;
             ",
         )?;
         let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
@@ -285,7 +373,8 @@ impl Index {
             match rows.next() {
                 Some(Ok(row)) => {
                     let path: String = row.get(1);
-                    results.push((row.get(0), path.into(), row.get(2)))
+                    let size: Option<i64> = row.get(3);
+                    results.push((row.get(0), path.into(), row.get(2), size.unwrap_or(0) as usize, row.get(4)))
                 }
                 Some(Err(e)) => return Err(e.into()),
                 None => break,
@@ -318,8 +407,8 @@ impl Index {
         Ok(())
     }
 
-    /// Add a block, discarding overlapping blocks
-    pub(crate) fn replace_block(
+    /// Add a block to the index, that we haven't yet received
+    pub fn add_missing_block(
         &mut self,
         hash: &HashDigest,
         file_id: u32,
@@ -328,16 +417,37 @@ impl Index {
     ) -> Result<(), Error> {
         self.begin()?;
         self.db.execute(
-            "DELETE FROM blocks
-            WHERE file_id = ? AND offset + size > ? AND offset < ?;
+            "
+            INSERT INTO blocks(hash, file_id, offset, size, present)
+            VALUES(?, ?, ?, ?, 0);
             ",
             &[
-                &file_id as &dyn ToSql,
+                &hash as &dyn ToSql,
+                &file_id,
                 &(offset as i64),
-                &((offset + size) as i64),
+                &(size as i64),
             ],
         )?;
-        self.add_block(hash, file_id, offset, size)
+        Ok(())
+    }
+
+    pub fn set_file_size_and_compute_blocks_hash(
+        &mut self,
+        file_id: u32,
+        size: usize,
+    ) -> Result<(), Error> {
+        self.begin()?;
+
+        let blocks_hash = self.compute_blocks_hash(file_id)?;
+        self.db.execute(
+            "
+            UPDATE files
+            SET size = ?, blocks_hash = ?
+            WHERE file_id = ?;
+            ",
+            &[&(size as i64) as &dyn ToSql, &blocks_hash, &file_id],
+        )?;
+        Ok(())
     }
 
     /// Get a list of all the blocks in a specific file
@@ -347,7 +457,8 @@ impl Index {
     ) -> Result<Vec<(HashDigest, usize, usize)>, Error> {
         let mut stmt = self.db.prepare(
             "
-            SELECT hash, offset, size FROM blocks
+            SELECT hash, offset, size
+            FROM blocks
             WHERE file_id = ?;
             ",
         )?;
@@ -365,6 +476,134 @@ impl Index {
             }
         }
         Ok(results)
+    }
+
+    /// Get a list of temporary files
+    pub fn list_temp_files(&self) -> Result<Vec<PathBuf>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT name
+            FROM files
+            WHERE temporary = 1;
+            ",
+        )?;
+        let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let name: String = row.get(0);
+                    results.push(name.into());
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn check_temp_files(&self) -> Result<Vec<(u32, PathBuf, bool)>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT
+                file_id, name,
+                EXISTS (
+                    SELECT hash FROM blocks
+                    WHERE blocks.file_id = files.file_id
+                        AND present = 0
+                ) AS missing
+            FROM files
+            WHERE temporary = 1;
+            ",
+        )?;
+        let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let file_id = row.get(0);
+                    let name: String = row.get(1);
+                    let missing_blocks = row.get(2);
+                    results.push((file_id, name.into(), missing_blocks));
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
+    }
+
+    /// Get a list of blocks that are referenced by files but not present
+    pub fn list_missing_blocks(&self) -> Result<Vec<HashDigest>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT hash
+            FROM blocks
+            WHERE present = 0;
+            ",
+        )?;
+        let mut rows = stmt.query(rusqlite::NO_PARAMS)?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let hash: HashDigest = row.get(0);
+                    results.push(hash);
+                },
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
+    }
+
+    /// Get all locations where a block is to be found
+    pub fn list_block_locations(
+        &self,
+        hash: &HashDigest,
+    ) -> Result<Vec<(u32, PathBuf, usize, usize)>, Error> {
+        let mut stmt = self.db.prepare(
+            "
+            SELECT files.file_id, files.name, blocks.offset, blocks.size
+            FROM blocks
+            INNER JOIN files ON files.file_id = blocks.file_id
+            WHERE hash = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[hash])?;
+        let mut results = Vec::new();
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let file_id = row.get(0);
+                    let name: String = row.get(1);
+                    let offset: i64 = row.get(2);
+                    let size: i64 = row.get(3);
+                    results.push((file_id, name.into(), offset as usize, size as usize));
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn mark_block_present(
+        &mut self,
+        file_id: u32,
+        hash: &HashDigest,
+        offset: usize,
+    ) -> Result<(), Error> {
+        self.begin()?;
+        self.db.execute(
+            "
+            UPDATE blocks
+            SET present = 1
+            WHERE file_id = ? AND hash = ? AND offset = ?;
+            ",
+            &[&file_id as &dyn ToSql, &hash, &(offset as i64)],
+        )?;
+        Ok(())
     }
 
     /// Cut up a file into blocks and add them to the index
@@ -407,25 +646,8 @@ impl Index {
                 }
             }
 
-            // Compute blocks_hash
-            sha1.reset();
-            let mut stmt = self.db.prepare(
-                "
-                SELECT hash FROM blocks WHERE file_id = ?;
-                ",
-            )?;
-            let mut rows = stmt.query(&[file_id])?;
-            loop {
-                match rows.next() {
-                    Some(Ok(row)) => {
-                        let digest: HashDigest = row.get(0);
-                        sha1.update(&digest.0);
-                    }
-                    Some(Err(e)) => return Err(e.into()),
-                    None => break,
-                }
-            }
-            let blocks_digest = HashDigest(sha1.digest().bytes());
+            // Set blocks_hash
+            let blocks_digest = self.compute_blocks_hash(file_id)?;
             self.db.execute(
                 "
                 UPDATE files SET blocks_hash = ? WHERE file_id = ?;
@@ -434,6 +656,29 @@ impl Index {
             )?;
         }
         Ok(())
+    }
+
+    fn compute_blocks_hash(&self, file_id: u32) -> Result<HashDigest, Error> {
+        let mut sha1 = Sha1::new();
+        let mut stmt = self.db.prepare(
+            "
+            SELECT hash
+            FROM blocks
+            WHERE file_id = ?;
+            ",
+        )?;
+        let mut rows = stmt.query(&[file_id])?;
+        loop {
+            match rows.next() {
+                Some(Ok(row)) => {
+                    let digest: HashDigest = row.get(0);
+                    sha1.update(&digest.0);
+                }
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            }
+        }
+        Ok(HashDigest(sha1.digest().bytes()))
     }
 
     /// Index files and directories recursively
@@ -471,7 +716,7 @@ impl Index {
 
     /// List all files and remove those that don't exist on disk
     pub fn remove_missing_files(&mut self, path: &Path) -> Result<(), Error> {
-        for (file_id, file_path, _modified) in self.list_files()? {
+        for (file_id, file_path, _modified, _size, _blocks_hash) in self.list_files()? {
             if !path.join(&file_path).is_file() {
                 info!("Removing missing file {:?}", file_path);
                 self.remove_file(file_id)?;

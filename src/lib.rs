@@ -7,14 +7,15 @@
 //! additions such as caching file signatures to make repeated synchronizations
 //! faster.
 
-#![forbid(unsafe_code)]
-
 mod index;
+mod streaming_iterator;
 pub mod sync;
 
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ToSqlOutput};
+use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 pub use index::Index;
 
@@ -23,6 +24,10 @@ pub use index::Index;
 pub enum Error {
     Io(std::io::Error),
     Sqlite(rusqlite::Error),
+    Protocol(Box<dyn std::error::Error + 'static>),
+    Sync(String),
+    UnsupportedForLocation(&'static str),
+    BadFilenameEncoding,
 }
 
 impl fmt::Display for Error {
@@ -30,11 +35,27 @@ impl fmt::Display for Error {
         match self {
             Error::Sqlite(e) => write!(f, "SQLite error: {}", e),
             Error::Io(e) => write!(f, "I/O error: {}", e),
+            Error::Protocol(e) => write!(f, "{}", e),
+            Error::Sync(e) => write!(f, "{}", e),
+            Error::UnsupportedForLocation(e) => write!(f, "{}", e),
+            Error::BadFilenameEncoding => write!(f, "Bad filename encoding"),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use std::ops::Deref;
+        match *self {
+            Error::Sqlite(ref e) => Some(e),
+            Error::Io(ref e) => Some(e),
+            Error::Protocol(ref e) => Some(e.deref()),
+            Error::Sync(..) => None,
+            Error::UnsupportedForLocation(..) => None,
+            Error::BadFilenameEncoding => None,
+        }
+    }
+}
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Error {
@@ -123,12 +144,42 @@ impl fmt::Display for HashDigest {
     }
 }
 
+fn temp_name(name: &Path) -> Result<PathBuf, Error> {
+    let mut temp_path = PathBuf::new();
+    if let Some(parent) = name.parent() {
+        temp_path.push(parent);
+    }
+    let mut temp_name: OsString = ".syncfast_tmp_".into();
+    temp_name.push(name.file_name().ok_or(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"),
+    )?);
+    temp_path.push(temp_name);
+    Ok(temp_path)
+}
+
+fn untemp_name(name: &Path) -> Result<PathBuf, Error> {
+    let mut temp_path = PathBuf::new();
+    if let Some(parent) = name.parent() {
+        temp_path.push(parent);
+    }
+    let temp_name = name.file_name().ok_or(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"),
+    )?;
+    let temp_name = temp_name.to_str().ok_or(Error::BadFilenameEncoding)?;
+    let stripped_name = temp_name.strip_prefix(".syncfast_tmp_").ok_or(
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Not a temporary path"),
+    )?;
+    temp_path.push(stripped_name);
+    Ok(temp_path)
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::types::{FromSql, ToSql, ToSqlOutput, Value, ValueRef};
     use sha1::Sha1;
+    use std::path::Path;
 
-    use super::HashDigest;
+    use super::{HashDigest, temp_name};
 
     #[test]
     fn test_hash_tosql() {
@@ -153,5 +204,11 @@ mod tests {
             "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3",
         ));
         assert_eq!(hash.unwrap(), digest);
+    }
+
+    #[test]
+    fn test_temp_name() {
+        assert_eq!(temp_name(Path::new("file")).unwrap(), Path::new(".syncfast_tmp_file"));
+        assert_eq!(temp_name(Path::new("dir/file")).unwrap(), Path::new("dir/.syncfast_tmp_file"));
     }
 }
