@@ -11,49 +11,15 @@ This is an rsync clone written in the [Rust](https://www.rust-lang.org/) program
 Current status
 ==============
 
-Core functionality is there. You can index and sync local folders.
+Core functionality is there. You can index and sync local folders, and sync over SSH.
 
-The next step is implementing SSH and HTTP remotes.
+The next step is implementing syncing over HTTP, and syncing "offline" (diff/patch).
 
 How to use
 ==========
 
-Common options: `-X` indicates the location of the index file on the source side, and `-x` the index file on the destination side.
-
-rsync
------
-
 ```
-$ syncfast sync some/folder othermachine:folder
-```
-
-Pre-computed indices are optional but make the operation faster:
-
-```
-$ syncfast index -x folder.idx some/folder
-$ ssh othermachine \
-  syncfast index -x folder.idx folder
-$ syncfast sync -X folder.idx -x othermachine:folder.idx some/folder othermachine:folder
-```
-
-rdiff
------
-
-```
-# Same as rdiff (signature/delta/patch)
-$ syncfast index -x signature.idx old/folder
-$ syncfast diff -o patch.bin -x signature.idx new/folder
-$ syncfast patch old/folder patch.bin
-```
-
-zsync
------
-
-```
-$ syncfast index -x data.tar.syncfast.idx data.tar
-$ syncfast sync -X data.tar.syncfast.idx old/data.tar
-# Or over network
-$ syncfast sync -X http://example.org/data.tar.syncfast.idx old/data.tar
+$ syncfast sync some/folder ssh://othermachine/home/folder
 ```
 
 Notes
