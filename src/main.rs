@@ -111,11 +111,14 @@ fn main() {
     let res = match matches.subcommand_name() {
         Some("index") => || -> Result<(), Error> {
             let s_matches = matches.subcommand_matches("index").unwrap();
-            let index_filename = s_matches.value_of_os("index-file").unwrap();
-            let index_filename = Path::new(index_filename);
             let path = Path::new(s_matches.value_of_os("path").unwrap());
 
-            let mut index = Index::open(index_filename)?;
+            let mut index = match s_matches.value_of_os("index-file") {
+                Some(p) => Index::open(Path::new(p))?,
+                None => {
+                    Index::open(&path.join(".syncfast.idx"))?
+                },
+            };
             index.index_path(path)?;
             index.remove_missing_files(path)?;
             index.commit()?;
