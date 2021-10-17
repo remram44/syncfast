@@ -7,6 +7,7 @@
 //! additions such as caching file signatures to make repeated synchronizations
 //! faster.
 
+mod close_stdout;
 mod index;
 mod streaming_iterator;
 pub mod sync;
