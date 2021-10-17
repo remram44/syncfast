@@ -8,10 +8,11 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, stdin, stdout};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, stdin};
 use tokio::process::{Child, Command};
 
 use crate::Error;
+use crate::close_stdout::take_stdout;
 use crate::streaming_iterator::StreamingIterator;
 use crate::sync::{Destination, Source};
 use crate::sync::locations::SshLocation;
@@ -221,26 +222,28 @@ pub fn ssh_destination(loc: &SshLocation) -> Result<Destination, Error> {
 }
 
 pub fn stdio_source() -> Source {
+    let stdout = take_stdout().unwrap();
     Source {
         stream: futures::stream::unfold(
             Box::pin(SshStream::new(stdin())),
             SshStream::stream,
         ).boxed_local(),
         sink: Box::pin(futures::sink::unfold(
-            Box::pin(SshSink::new(stdout())),
+            Box::pin(SshSink::new(stdout)),
             SshSink::sink,
         )),
     }
 }
 
 pub fn stdio_destination() -> Destination {
+    let stdout = take_stdout().unwrap();
     Destination {
         stream: futures::stream::unfold(
             Box::pin(SshStream::new(stdin())),
             SshStream::stream,
         ).boxed_local(),
         sink: Box::pin(futures::sink::unfold(
-            Box::pin(SshSink::new(stdout())),
+            Box::pin(SshSink::new(stdout)),
             SshSink::sink,
         )),
     }
