@@ -2,6 +2,7 @@
 name = "syncfast"
 version = "0.2.0"
 edition = "2018"
+rust-version = "1.46"
 authors = ["Remi Rampin <r@remirampin.com>"]
 description = "rsync/rdiff/zsync clone"
 repository = "https://github.com/remram44/syncfast"
