@@ -22,7 +22,7 @@ env_logger = { version = "0.7", default-features = false, features = ["termcolor
 log = "0.4"
 rusqlite = { version = "0.16", features = ["chrono"] }
 sha1 = "0.6"
-tokio = { version = "1.11", features = ["io-std", "io-util", "process", "rt"] }
+tokio = { version = "1.18", features = ["io-std", "io-util", "process", "rt"] }
 
 [dev-dependencies]
 tempfile = "3"
